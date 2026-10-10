@@ -19,6 +19,8 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
       - run: go build -o Brodge ./cmd/brodge
-      - run: ./scripts/sign-macos.sh --setup
-      - run: ./scripts/package-macos.sh
-      - run: codesign --verify --deep --strict build/Brodge.app
+      # This disposable runner has no person to confirm user-domain trust.
+      - run: sudo env "BRODGE_SIGNING_DIR=$RUNNER_TEMP/brodge-signing" BRODGE_SIGNING_TRUST_DOMAIN=admin ./scripts/sign-macos.sh --setup
+        timeout-minutes: 3
+      - run: sudo env "BRODGE_SIGNING_DIR=$RUNNER_TEMP/brodge-signing" ./scripts/package-macos.sh
+      - run: sudo codesign --verify --deep --strict build/Brodge.app

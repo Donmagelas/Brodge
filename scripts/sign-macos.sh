@@ -69,7 +69,9 @@ EOF
         # Apple security cannot import OpenSSL 3's default PKCS#12 algorithms.
         # This password-protected transport exists only until keychain import.
         openssl pkcs12 -export -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 -inkey "$work/private.pem" -in "$certificate" -out "$work/identity.p12" -passout "file:$password_file"
+        printf '%s\n' 'Importing Brodge signing certificate into its private keychain.'
         security import "$work/identity.p12" -k "$keychain" -P "$password" -T /usr/bin/codesign >/dev/null
+        printf '%s\n' 'Configuring codesign access to the private key.'
         security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
         openssl x509 -in "$certificate" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g' > "$identity_file"
     fi
@@ -87,8 +89,15 @@ make_searchable
 
 if [ "$target" = --setup ]; then
     # User-domain trust is restricted to this certificate's code-signing policy.
-    # This may ask for macOS confirmation once. No system/TLS trust is installed.
-    security add-trusted-cert -r trustRoot -p codeSign -k "$keychain" "$certificate"
+    # CI explicitly uses admin-domain trust on its disposable root-owned runner
+    # because there is no user available to answer the user-domain system prompt.
+    case "${BRODGE_SIGNING_TRUST_DOMAIN:-user}" in
+        user) set -- ;;
+        admin) [ "$(id -u)" = 0 ] || fail 'Admin trust requires an explicitly elevated setup.'; set -- -d ;;
+        *) fail 'Unknown signing trust domain.' ;;
+    esac
+    printf '%s\n' 'Installing code-signing-only certificate trust.'
+    security add-trusted-cert "$@" -r trustRoot -p codeSign -k "$keychain" "$certificate"
     printf '%s\n' 'Brodge persistent local signing identity is ready.'
 else
     codesign --force --timestamp=none --keychain "$keychain" --sign "$identity" "$target"

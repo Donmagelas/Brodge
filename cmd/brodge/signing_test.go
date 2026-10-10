@@ -96,6 +96,36 @@ func TestSigningFailsClosedWithoutRegeneratingIdentity(t *testing.T) {
 	}
 }
 
+func TestSigningSetupTrustDomainIsExplicit(t *testing.T) {
+	for _, tc := range []struct {
+		name, domain, uid, want string
+	}{
+		{"default-user", "", "501", "add-trusted-cert -r trustRoot -p codeSign"},
+		{"disposable-ci-admin", "admin", "0", "add-trusted-cert -d -r trustRoot -p codeSign"},
+		{"admin-not-elevated", "admin", "501", ""},
+		{"unknown-domain", "other", "0", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _, env := signingFixture(t)
+			writeSigningFixture(t, filepath.Join(root, "bin/id"), "#!/bin/sh\necho "+tc.uid+"\n")
+			cmd := exec.Command("sh", "../../scripts/sign-macos.sh", "--setup")
+			cmd.Env = append(env, "BRODGE_SIGNING_TRUST_DOMAIN="+tc.domain)
+			output, err := cmd.CombinedOutput()
+			if (err == nil) != (tc.want != "") {
+				t.Fatalf("unexpected setup result: %v %s", err, output)
+			}
+			log, _ := os.ReadFile(filepath.Join(root, "security.log"))
+			if tc.want == "" {
+				if strings.Contains(string(log), "add-trusted-cert") {
+					t.Fatal("invalid setup changed trust")
+				}
+			} else if !strings.Contains(string(log), tc.want) {
+				t.Fatal("wrong trust domain or policy", string(log))
+			}
+		})
+	}
+}
+
 func TestPackagingReplacesOnlyStoppedAppWithSameIdentity(t *testing.T) {
 	for _, failure := range []string{"none", "running", "signing", "identity-changed"} {
 		t.Run(failure, func(t *testing.T) {
