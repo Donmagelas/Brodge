@@ -189,6 +189,7 @@ func testAgent(t *testing.T, socket string) *Agent {
 	}
 	a.timeout = 200 * time.Millisecond
 	a.openThread = nil // Unit tests must never navigate the user's Desktop.
+	a.creationIndex = func(context.Context) ([]string, error) { return []string{"T1", "T2"}, nil }
 	a.prepareNew = func(context.Context, string, []core.ConversationMedia) (desktopDraft, error) {
 		return nil, fmt.Errorf("test-ui-unavailable")
 	}
@@ -293,7 +294,7 @@ func TestCUJ_FirstCreationFollowupsAndOriginalSource(t *testing.T) {
 		return &fakeDraft{submit: func() (string, error) {
 			sends++
 			f.mu.Lock()
-			f.states["T3"] = uiTurn("T3", prompt)
+			f.states["T3"] = uiTurn("T3", prompt+"\n") // Actual Desktop contenteditable serialization.
 			f.mu.Unlock()
 			return "codex://threads/T3?hostId=local", nil
 		}}, nil
@@ -550,6 +551,9 @@ func TestCreationDefaultShortcutsRejectRemappingAndCollisions(t *testing.T) {
 		{`[]`, true},
 		{`[{"command":"newProjectlessTask","key":"Command+Option+O"}]`, true},
 		{`[{"command":"copyDeeplink","key":"CmdOrCtrl+Alt+L"}]`, true},
+		{`[{"command":"composer.submitInBackground","key":"Command+Return"}]`, true},
+		{`[{"command":"composer.submitInBackground","key":null}]`, false},
+		{`[{"command":"other","key":"Cmd+Enter"}]`, false},
 		{`[{"command":"unrelated","key":"Cmd+J"}]`, true},
 		{`[{"command":"newProjectlessTask","key":null}]`, false},
 		{`[{"command":"copyDeeplink","key":"Cmd+J"}]`, false},
@@ -563,6 +567,168 @@ func TestCreationDefaultShortcutsRejectRemappingAndCollisions(t *testing.T) {
 		if err := checkCreationKeymap(path); (err == nil) != tc.ok {
 			t.Fatalf("body %s: %v", tc.body, err)
 		}
+	}
+}
+
+func TestCUJ_CreationLostLinkAutoRecoversFromPersistentIndex(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	indexPath := filepath.Join(t.TempDir(), "desktop.sqlite")
+	index, err := sql.Open("sqlite", indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	if _, err = index.Exec(`CREATE TABLE threads(id TEXT PRIMARY KEY); INSERT INTO threads VALUES('T1'),('T2')`); err != nil {
+		t.Fatal(err)
+	}
+	a.creationIndex = func(ctx context.Context) ([]string, error) { return readDesktopThreadIndex(ctx, indexPath) }
+	sends := 0
+	a.prepareNew = func(_ context.Context, prompt string, _ []core.ConversationMedia) (desktopDraft, error) {
+		return &fakeDraft{submit: func() (string, error) {
+			sends++
+			f.mu.Lock()
+			f.states["T3"] = uiTurn("T3", prompt+"\n")
+			f.mu.Unlock()
+			if _, err := index.Exec(`INSERT INTO threads VALUES('T3')`); err != nil {
+				t.Fatal(err)
+			}
+			return "", fmt.Errorf("desktop-created-link-not-confirmed")
+		}}, nil
+	}
+	m := incoming("A", "DM", "lost-link", "original")
+	if err := a.HandleConversation(context.Background(), p, m); err != nil {
+		t.Fatal(err)
+	}
+	step(t, a)
+	if count(t, a.store, `SELECT count(*) FROM jobs WHERE state='create_uncertain' AND creation_seen='["T1","T2"]'`) != 1 {
+		t.Fatal("creation baseline was not persisted before submission")
+	}
+	// Reopen the actual SQLite store; discovery must not depend on process memory.
+	path := filepath.Join(a.dataDir, "bridge.sqlite")
+	if err := a.store.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	a.store, err = openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.recover(); err != nil {
+		t.Fatal(err)
+	}
+	step(t, a)
+	if count(t, a.store, `SELECT count(*) FROM bindings WHERE thread='T3'`) != 1 || sends != 1 || f.starts != 0 {
+		t.Fatal("lost link did not auto-bind, or submission repeated")
+	}
+	f.finish("T3", "first result", false)
+	step(t, a)
+	accept(t, a, p, incoming("A", "DM", "followup", "continue"))
+	step(t, a)
+	if f.starts != 1 || count(t, a.store, `SELECT count(*) FROM jobs WHERE thread='T3'`) != 2 {
+		t.Fatal("followup did not continue auto-discovered conversation")
+	}
+}
+
+func TestCUJ_CreationDiscoveryRequiresUniqueNewFirstTurn(t *testing.T) {
+	for _, scenario := range []string{"unrelated-new-thread", "two-matching-threads", "no-evidence", "unavailable-candidate", "missing-baseline", "null-baseline"} {
+		t.Run(scenario, func(t *testing.T) {
+			f, socket := newFake(t)
+			a := testAgent(t, socket)
+			p := &fakePlatform{}
+			ids := []string{"T1", "T2"}
+			a.creationIndex = func(context.Context) ([]string, error) { return append([]string{}, ids...), nil }
+			sends := 0
+			a.prepareNew = func(_ context.Context, prompt string, _ []core.ConversationMedia) (desktopDraft, error) {
+				return &fakeDraft{submit: func() (string, error) {
+					sends++
+					f.mu.Lock()
+					// An existing conversation with identical text is never a candidate.
+					f.states["T1"] = uiTurn("T1", prompt)
+					if scenario != "no-evidence" {
+						f.states["T3"] = uiTurn("T3", prompt)
+						other := "unrelated"
+						if scenario == "two-matching-threads" {
+							other = prompt
+						}
+						f.states["T4"] = uiTurn("T4", other)
+						if scenario == "unavailable-candidate" {
+							delete(f.states, "T4")
+						}
+						ids = append(ids, "T3", "T4")
+					}
+					f.mu.Unlock()
+					return "", fmt.Errorf("lost-link")
+				}}, nil
+			}
+			if err := a.HandleConversation(context.Background(), p, incoming("A", "G", "first", "original")); err != nil {
+				t.Fatal(err)
+			}
+			step(t, a)
+			if scenario == "missing-baseline" || scenario == "null-baseline" {
+				raw := ""
+				if scenario == "null-baseline" {
+					raw = "null"
+				}
+				if _, err := a.store.db.Exec(`UPDATE jobs SET creation_seen=?`, raw); err != nil {
+					t.Fatal(err)
+				}
+			}
+			step(t, a)
+			step(t, a)
+			want := 0
+			if scenario == "unrelated-new-thread" {
+				want = 1
+			}
+			if count(t, a.store, `SELECT count(*) FROM bindings WHERE thread='T3'`) != want || count(t, a.store, `SELECT count(*) FROM bindings WHERE thread!='T3'`) != 0 || sends != 1 || f.starts != 0 {
+				t.Fatal("ambiguous/old evidence used or first message resent")
+			}
+		})
+	}
+}
+
+func TestDesktopThreadIndexIsReadOnly(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "state_5.sqlite")
+	if _, err := readDesktopThreadIndex(context.Background(), missing); err == nil {
+		t.Fatal("missing Desktop index accepted")
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatal("read-only index probe created a database")
+	}
+}
+
+func TestCreationTextAcceptsOnlyDesktopParagraphSuffix(t *testing.T) {
+	for _, tt := range []struct {
+		input string
+		ok    bool
+	}{{"original", true}, {"original\n", true}, {"original\n\n", false}, {"original ", false}, {" original", false}, {"original\nextra", false}} {
+		_, err := firstCreationTurn(uiTurn("T3", tt.input), "T3", "original", nil)
+		if (err == nil) != tt.ok {
+			t.Errorf("input=%q: %v", tt.input, err)
+		}
+	}
+}
+
+func TestCUJ_RepeatedCreationRetryDoesNotQueueAnotherSubmission(t *testing.T) {
+	_, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	if err := a.HandleConversation(context.Background(), p, incoming("A", "DM", "failed", "original")); err != nil {
+		t.Fatal(err)
+	}
+	step(t, a)
+	var id string
+	if err := a.store.db.QueryRow(`SELECT id FROM jobs`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RetryConversationCreation(context.Background(), id, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RetryConversationCreation(context.Background(), id, ""); err != nil {
+		t.Fatal(err)
+	}
+	if count(t, a.store, `SELECT count(*) FROM jobs WHERE state='create_pending'`) != 1 {
+		t.Fatal("repeated retry duplicated or lost pending creation")
 	}
 }
 

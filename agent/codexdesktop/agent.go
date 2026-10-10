@@ -41,6 +41,7 @@ type Agent struct {
 	nextOpen      map[string]time.Time
 	prepareNew    func(context.Context, string, []core.ConversationMedia) (desktopDraft, error)
 	creationMu    sync.Mutex
+	creationIndex func(context.Context) ([]string, error)
 }
 
 var _ core.Agent = (*Agent)(nil)
@@ -117,6 +118,7 @@ func New(opts map[string]any) (*Agent, error) {
 	a := &Agent{store: s, dataDir: data, i18n: core.NewI18n(core.NormalizeLanguageString(str(opts["language"]))), allowed: allowed, socket: str(opts["socket"]), nativeAnswers: opts["native_answers"] == true, timeout: 5 * time.Second, poll: time.Second, platforms: map[string]core.Platform{}, owner: uuid.NewString(), lock: lock, openThread: openDesktopThread, nextOpen: map[string]time.Time{}}
 	a.attach = a.attachWithActivation
 	a.prepareNew = prepareDesktopDraft
+	a.creationIndex = desktopThreadIndex
 	return a, nil
 }
 func (a *Agent) Name() string { return "codex-desktop" }

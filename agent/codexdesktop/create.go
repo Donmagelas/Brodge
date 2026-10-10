@@ -3,12 +3,16 @@ package codexdesktop
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/chenhg5/cc-connect/core"
 )
@@ -20,7 +24,106 @@ type desktopDraft interface {
 	Close()
 }
 
-// These two commands are hidden menu accelerators in the supported Desktop.
+// The installed Desktop's index supplies candidates, never proof of submission.
+// Open read-only and read only IDs; exact first-turn evidence still comes from IPC.
+func desktopThreadIndex(ctx context.Context) ([]string, error) {
+	root := os.Getenv("CODEX_HOME")
+	if root == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		root = filepath.Join(home, ".codex")
+	}
+	return readDesktopThreadIndex(ctx, filepath.Join(root, "state_5.sqlite"))
+}
+
+func readDesktopThreadIndex(ctx context.Context, path string) ([]string, error) {
+	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		return nil, fmt.Errorf("desktop-thread-index-unavailable")
+	}
+	defer db.Close()
+	rows, err := db.QueryContext(ctx, `SELECT id FROM threads ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("desktop-thread-index-unavailable")
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("desktop-thread-index-unavailable")
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (a *Agent) discoverCreation(ctx context.Context, j job) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var raw string
+	if err := a.store.db.QueryRow(`SELECT creation_seen FROM jobs WHERE id=?`, j.ID).Scan(&raw); err != nil {
+		return "", err
+	}
+	var before []string
+	if raw == "" || json.Unmarshal([]byte(raw), &before) != nil || before == nil {
+		return "", fmt.Errorf("creation-baseline-unavailable")
+	}
+	ids, err := a.creationIndex(ctx)
+	if err != nil {
+		return "", err
+	}
+	seen := map[string]bool{}
+	for _, id := range before {
+		seen[id] = true
+	}
+	var candidates []string
+	for _, id := range ids {
+		if !seen[id] {
+			candidates = append(candidates, id)
+		}
+	}
+	if len(candidates) > 32 {
+		return "", fmt.Errorf("creation-candidates-ambiguous")
+	}
+	media, err := a.creationMedia(j)
+	if err != nil {
+		return "", err
+	}
+	var matched string
+	for _, id := range candidates {
+		// Discovery never navigates another conversation just to inspect it.
+		probe, cancel := context.WithTimeout(ctx, 2*time.Second)
+		at, e := attachIPC(probe, a.socket, id, a.timeout)
+		if e != nil {
+			cancel()
+			return "", fmt.Errorf("creation-history-unavailable")
+		}
+		state, e := at.snapshot(probe)
+		at.c.abort(fmt.Errorf("detached"))
+		cancel()
+		if e != nil {
+			return "", fmt.Errorf("creation-history-unavailable")
+		}
+		if _, e = firstCreationTurn(state, id, creationPrompt(j), media); e == nil {
+			if matched != "" {
+				return "", fmt.Errorf("creation-candidates-ambiguous")
+			}
+			matched = id
+		} else if e.Error() == "creation-history-unavailable" {
+			return "", e
+		}
+	}
+	if matched == "" {
+		return "", fmt.Errorf("creation-history-unavailable")
+	}
+	return matched, nil
+}
+
+// Creation uses hidden menu accelerators and the composer's submit command.
 // Do not fire their default keys if the user has remapped or reused them.
 func checkCreationKeymap(path string) error {
 	data, err := os.ReadFile(path)
@@ -43,6 +146,8 @@ func checkCreationKeymap(path string) error {
 				p = "cmd"
 			case "option":
 				p = "alt"
+			case "return":
+				p = "enter"
 			}
 			parts[i] = p
 		}
@@ -54,7 +159,7 @@ func checkCreationKeymap(path string) error {
 		if e.Key != nil {
 			key = normalize(*e.Key)
 		}
-		for command, expected := range map[string]string{"newProjectlessTask": "alt+cmd+o", "copyDeeplink": "alt+cmd+l"} {
+		for command, expected := range map[string]string{"newProjectlessTask": "alt+cmd+o", "copyDeeplink": "alt+cmd+l", "composer.submitInBackground": "cmd+enter"} {
 			if (strings.TrimPrefix(e.Command, "-") == command && (e.Command != command || key != expected)) || (e.Command != command && key == expected) {
 				return fmt.Errorf("自动创建所需的 Desktop 快捷键已被自定义，请先绑定已有会话；Brodge 不会修改快捷键设置")
 			}
@@ -110,7 +215,8 @@ func (a *Agent) creationError(j job, state string, cause error) error {
 	}
 	text := "自动新建尚未发送首条消息。请在 Brodge 查看原因，处理后点重试创建。"
 	if state != "create_failed" {
-		text = "自动新建的发送结果待确认，不会重复发送。请把刚创建的 Desktop 会话链接填入 Brodge，确认原会话后接续。"
+		text = "Brodge 正在自动核对首次发送结果，暂时无需操作。确认对应会话后会自动绑定并回传结果，不会重复发送。"
+		return a.store.notice(j, "creation_reconciling", text)
 	}
 	return a.store.notice(j, state, text+"\n"+cause.Error())
 }
@@ -118,7 +224,7 @@ func (a *Agent) creationError(j job, state string, cause error) error {
 func (a *Agent) advanceCreation(ctx context.Context) error {
 	a.creationMu.Lock()
 	defer a.creationMu.Unlock()
-	rows, err := a.store.db.Query(`SELECT ` + jobCols + ` FROM jobs WHERE state IN ('create_pending','create_verifying') ORDER BY rowid`)
+	rows, err := a.store.db.Query(`SELECT ` + jobCols + ` FROM jobs WHERE state IN ('create_pending','create_verifying','create_uncertain') ORDER BY rowid`)
 	if err != nil {
 		return err
 	}
@@ -162,7 +268,14 @@ func (a *Agent) advanceOneCreation(ctx context.Context, j job) error {
 		if err != nil {
 			return a.creationError(j, "create_failed", err)
 		}
-		if _, err = a.store.db.Exec(`UPDATE jobs SET state='create_preparing',error='' WHERE id=? AND state='create_pending'`, j.ID); err != nil {
+		before, err := a.creationIndex(ctx)
+		if err != nil {
+			return a.creationError(j, "create_failed", err)
+		}
+		if before == nil {
+			before = []string{}
+		}
+		if _, err = a.store.db.Exec(`UPDATE jobs SET state='create_preparing',error='',creation_seen=? WHERE id=? AND state='create_pending'`, marshal(before), j.ID); err != nil {
 			return err
 		}
 		draft, err := a.prepareNew(ctx, creationPrompt(j), media)
@@ -188,6 +301,15 @@ func (a *Agent) advanceOneCreation(ctx context.Context, j job) error {
 			return a.creationError(j, "create_uncertain", fmt.Errorf("creation-link-unavailable"))
 		}
 		if _, err = a.store.db.Exec(`UPDATE jobs SET state='create_verifying',thread=? WHERE id=?`, j.Thread, j.ID); err != nil {
+			return err
+		}
+	}
+	if j.Thread == "" || j.State == "create_uncertain" {
+		j.Thread, err = a.discoverCreation(ctx, j)
+		if err != nil {
+			return a.creationError(j, "create_uncertain", err)
+		}
+		if _, err = a.store.db.Exec(`UPDATE jobs SET thread=?,state='create_verifying' WHERE id=?`, j.Thread, j.ID); err != nil {
 			return err
 		}
 	}
@@ -246,7 +368,7 @@ func (a *Agent) verifyCreation(ctx context.Context, j job) error {
 	if _, err = tx.Exec(`UPDATE inbox SET state='done',bound_thread=?,bound_revision=1 WHERE app=? AND tenant=? AND message=? AND state='creating'`, j.Thread, origin.AppID, origin.Tenant, origin.MessageID); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE outbox SET state='skipped' WHERE job=? AND kind IN ('create_failed','create_uncertain','create_verifying') AND state='ready'`, j.ID); err != nil {
+	if _, err = tx.Exec(`UPDATE outbox SET state='skipped' WHERE job=? AND kind IN ('create_failed','create_uncertain','create_verifying','creation_reconciling') AND state='ready'`, j.ID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -288,6 +410,11 @@ func firstCreationTurn(state wire, thread, prompt string, media []core.Conversat
 		}
 	}
 	text := strings.Join(texts, "\n")
+	// Desktop's contenteditable serializer may add one paragraph newline.
+	// Accept exactly that suffix; never trim arbitrary user text or whitespace.
+	if text == prompt+"\n" || (len(media) > 0 && strings.HasSuffix(text, "\n"+prompt+"\n")) {
+		text = strings.TrimSuffix(text, "\n")
+	}
 	if len(media) == 0 {
 		if text != prompt || len(imagePaths) != 0 {
 			return nil, fmt.Errorf("creation-input-mismatch")
@@ -334,8 +461,9 @@ func firstCreationTurn(state wire, thread, prompt string, media []core.Conversat
 	return t, nil
 }
 
-// Only a failure before Submit can be retried. Unknown submissions require an
-// explicit candidate link and exact first-turn evidence instead.
+// Only a failure before Submit can be retried. Unknown submissions are
+// reconciled automatically. Accept an explicit candidate for older API clients,
+// but still require exact first-turn evidence; never submit it again.
 func (a *Agent) RetryConversationCreation(ctx context.Context, id, thread string) error {
 	a.creationMu.Lock()
 	defer a.creationMu.Unlock()
@@ -347,8 +475,11 @@ func (a *Agent) RetryConversationCreation(ctx context.Context, id, thread string
 		return fmt.Errorf("authorization-scope-changed")
 	}
 	if thread == "" {
+		if j.State == "create_pending" || j.State == "create_preparing" || j.State == "create_sending" {
+			return nil
+		}
 		if j.State != "create_failed" {
-			return fmt.Errorf("只能重试明确尚未发送的创建；发送结果不确定时请填写已创建的会话链接")
+			return fmt.Errorf("只能重试明确尚未发送的创建；发送结果不确定时 Brodge 会自动核对，不会重复发送")
 		}
 		_, err = a.store.db.Exec(`UPDATE jobs SET state='create_pending',error='' WHERE id=? AND state='create_failed'`, id)
 		return err

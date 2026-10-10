@@ -50,6 +50,31 @@ static AXUIElementRef unique(AXUIElementRef root, NSString *role, NSArray *label
     if (!withinDeadline() || budget < 0 || found.count != 1) return NULL;
     return (AXUIElementRef)CFRetain((CFTypeRef)found[0]);
 }
+static AXUIElementRef composer(AXUIElementRef window, NSString **diagnostic) {
+    // Desktop's ProseMirror uses role=textbox and aria-multiline=true. Its
+    // placeholder is a CSS decoration, not an AX name. Reject multiple inputs.
+    NSMutableArray *found=[NSMutableArray array]; int budget=12000;
+    collect(window,@"AXTextArea",nil,found,0,&budget);
+    if(diagnostic) *diagnostic=[NSString stringWithFormat:@"desktop-composer-lookup(inputs=%lu,visited=%d,timeout=%d)",(unsigned long)found.count,12000-budget,!withinDeadline()];
+    if(!withinDeadline() || budget<0 || found.count!=1) return NULL;
+    return (AXUIElementRef)CFRetain((CFTypeRef)found[0]);
+}
+static bool textEquals(AXUIElementRef input, NSString *expected) {
+    id value=attr(input,kAXValueAttribute);
+    // A missing/unreadable value is not evidence of an empty draft.
+    // Chromium exposes a final paragraph separator for contenteditable text.
+    return [value isKindOfClass:[NSString class]] &&
+        ([value isEqualToString:expected] || [value isEqualToString:[expected stringByAppendingString:@"\n"]]);
+}
+static bool emptyComposer(AXUIElementRef input) {
+    if(textEquals(input,@"")) return true;
+    // CSS placeholder text is exposed as AXValue; Send remains AX-enabled even
+    // for an empty editor. Paste appends without clearing a draft, and its
+    // complete resulting text must match before any send can happen.
+    for(NSString *label in @[@"Do anything",@"随心输入",@"想做什麼都可以"])
+        if(textEquals(input,label)) return true;
+    return false;
+}
 static AXUIElementRef menu(AXUIElementRef app, NSArray *labels) {
     return unique((AXUIElementRef)attr(app, kAXMenuBarAttribute), @"AXMenuItem", labels);
 }
@@ -58,15 +83,18 @@ static bool sameWindow(BrodgeDraft *d) {
     id window = attr(d->app, kAXFocusedWindowAttribute);
     return window && CFEqual((CFTypeRef)window, d->window) && [NSWorkspace sharedWorkspace].frontmostApplication.processIdentifier == d->pid;
 }
-static bool shortcut(BrodgeDraft *d, CGKeyCode key) {
-    if (!withinDeadline() || [NSWorkspace sharedWorkspace].frontmostApplication.processIdentifier != d->pid) return false;
+static bool keyPair(pid_t pid, CGKeyCode key, CGEventFlags flags) {
     CGEventRef down=CGEventCreateKeyboardEvent(NULL,key,true), up=CGEventCreateKeyboardEvent(NULL,key,false);
     if (!down || !up) { if(down) CFRelease(down); if(up) CFRelease(up); return false; }
-    CGEventSetFlags(down,kCGEventFlagMaskCommand|kCGEventFlagMaskAlternate);
-    CGEventSetFlags(up,kCGEventFlagMaskCommand|kCGEventFlagMaskAlternate);
-    CGEventPostToPid(d->pid,down); CGEventPostToPid(d->pid,up);
+    CGEventSetFlags(down,flags);
+    CGEventSetFlags(up,flags);
+    CGEventPostToPid(pid,down); CGEventPostToPid(pid,up);
     CFRelease(down); CFRelease(up); return true;
 }
+static bool keyEvent(BrodgeDraft *d, CGKeyCode key, CGEventFlags flags) {
+    return withinDeadline() && [NSWorkspace sharedWorkspace].frontmostApplication.processIdentifier == d->pid && keyPair(d->pid,key,flags);
+}
+static bool shortcut(BrodgeDraft *d, CGKeyCode key) { return keyEvent(d,key,kCGEventFlagMaskCommand|kCGEventFlagMaskAlternate); }
 static NSArray *saveClipboard(NSPasteboard *pb) {
     NSMutableArray *saved = [NSMutableArray array];
     for (NSPasteboardItem *item in pb.pasteboardItems) {
@@ -116,7 +144,7 @@ static bool paste(BrodgeDraft *d, NSString *text, NSArray *paths) {
     for(int i=0;ok && withinDeadline() && i<40;i++) {
         usleep(100000);
         if(!sameWindow(d)) break;
-        if(text) observed=[stringAttr(d->input,kAXValueAttribute) isEqualToString:text];
+        if(text) observed=textEquals(d->input,text);
         else { observed=true; for(NSString *path in paths) { int budget=12000; if(!hasFileLabel(d->window,path.lastPathComponent,0,&budget)) observed=false; } }
         if(observed) break;
     }
@@ -143,18 +171,22 @@ uintptr_t brodgePrepareDraft(const char *prompt, const char *files, char **error
         }
         BrodgeDraft *d=calloc(1,sizeof(BrodgeDraft)); d->pid=[apps[0] processIdentifier]; d->prompt=strdup(prompt);
         d->app=AXUIElementCreateApplication(d->pid); AXUIElementSetMessagingTimeout(d->app,2);
-        [apps[0] activateWithOptions:0];
-        for(int i=0;withinDeadline() && i<20 && [NSWorkspace sharedWorkspace].frontmostApplication.processIdentifier!=d->pid;i++) usleep(100000);
+        NSWorkspaceOpenConfiguration *launch=[NSWorkspaceOpenConfiguration configuration];
+        launch.activates=YES; launch.createsNewApplicationInstance=NO; launch.addsToRecentItems=NO;
+        [[NSWorkspace sharedWorkspace] openApplicationAtURL:[apps[0] bundleURL] configuration:launch completionHandler:nil];
+        for(int i=0;withinDeadline() && i<40 && [NSWorkspace sharedWorkspace].frontmostApplication.processIdentifier!=d->pid;i++) usleep(100000);
         if(!shortcut(d,kVK_ANSI_O)) { *error=strdup("desktop-new-standalone-shortcut-unavailable"); goto fail; }
+        NSString *composerDiagnostic=@"desktop-focused-window-missing";
         for(int i=0;withinDeadline() && i<40;i++) {
             usleep(100000);
             id window=attr(d->app,kAXFocusedWindowAttribute); if(!window) continue;
-            AXUIElementRef input=unique((AXUIElementRef)window,@"AXTextArea",@[@"Do anything",@"随心输入",@"想做什麼都可以"]);
+            AXUIElementRef input=composer((AXUIElementRef)window,&composerDiagnostic);
             if(!input) continue;
-            if(![stringAttr(input,kAXValueAttribute) isEqualToString:@""]) { CFRelease(input); break; }
+            if(!emptyComposer(input)) { composerDiagnostic=@"desktop-composer-has-existing-or-unreadable-draft"; CFRelease(input); break; }
             d->input=input; d->window=(AXUIElementRef)CFRetain((CFTypeRef)window); break;
         }
-        if(!d->input || !sameWindow(d)) { *error=strdup("desktop-empty-composer-not-confirmed"); goto fail; }
+        if(!d->input) { *error=strdup(composerDiagnostic.UTF8String); goto fail; }
+        if(!sameWindow(d)) { *error=strdup("desktop-window-focus-changed"); goto fail; }
         { NSString *before=copyLink(d); if(!before || [before hasPrefix:@"codex://threads/"]) { *error=strdup("desktop-new-page-not-confirmed"); goto fail; } }
         { NSData *data=[[NSString stringWithUTF8String:files] dataUsingEncoding:NSUTF8StringEncoding];
           NSArray *paths=[NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
@@ -171,13 +203,19 @@ char *brodgeSubmitDraft(uintptr_t handle, char **error) {
     @autoreleasepool {
         deadline=[NSProcessInfo processInfo].systemUptime+15;
         BrodgeDraft *d=(BrodgeDraft *)handle;
-        if(!d || d->submitted || !sameWindow(d) || ![stringAttr(d->input,kAXValueAttribute) isEqualToString:[NSString stringWithUTF8String:d->prompt]]) { *error=strdup("desktop-draft-changed-before-send"); return NULL; }
-        AXUIElementRef input=unique(d->window,@"AXTextArea",@[@"Do anything",@"随心输入",@"想做什麼都可以"]);
+        if(!d || d->submitted || !sameWindow(d) || !textEquals(d->input,[NSString stringWithUTF8String:d->prompt])) { *error=strdup("desktop-draft-changed-before-send"); return NULL; }
+        AXUIElementRef input=composer(d->window,NULL);
         bool stillInput=input && CFEqual(input,d->input); if(input) CFRelease(input);
         NSString *before=copyLink(d);
         if(!stillInput || !before || [before hasPrefix:@"codex://threads/"]) { *error=strdup("desktop-new-page-changed-before-send"); return NULL; }
-        d->submitted=true; // At most one AX press, even if its return value is lost.
-        if(!press(d->send)) { *error=strdup("desktop-send-outcome-unknown"); return NULL; }
+        // AXPress reports success for this Desktop button without dispatching a
+        // submission. Use its normal Cmd+Enter composer command, with exact
+        // focus/text guards; the Go preflight rejects shortcut overrides.
+        if(AXUIElementSetAttributeValue(d->input,kAXFocusedAttribute,kCFBooleanTrue)!=kAXErrorSuccess) { *error=strdup("desktop-send-focus-unavailable"); return NULL; }
+        id focused=attr(d->app,kAXFocusedUIElementAttribute);
+        if(!focused || !CFEqual((CFTypeRef)focused,d->input) || !textEquals(d->input,[NSString stringWithUTF8String:d->prompt])) { *error=strdup("desktop-send-focus-changed"); return NULL; }
+        d->submitted=true; // One key pair only; unknown outcomes are never resent.
+        if(!keyEvent(d,kVK_Return,kCGEventFlagMaskCommand)) { *error=strdup("desktop-send-outcome-unknown"); return NULL; }
         for(int i=0;withinDeadline() && i<40;i++) {
             usleep(200000);
             NSString *link=copyLink(d);

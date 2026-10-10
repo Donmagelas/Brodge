@@ -64,7 +64,8 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, err
 	}
-	for _, table := range []string{"inbox", "jobs"} {
+	for _, column := range []struct{ table, name, fallback string }{{"inbox", "media", "[]"}, {"jobs", "media", "[]"}, {"jobs", "creation_seen", ""}} {
+		table := column.table
 		rows, e := db.Query("PRAGMA table_info(" + table + ")")
 		if e != nil {
 			db.Close()
@@ -78,7 +79,7 @@ func openStore(path string) (*store, error) {
 			if e = rows.Scan(&cid, &name, &typ, &nn, &def, &pk); e != nil {
 				break
 			}
-			if name == "media" {
+			if name == column.name {
 				found = true
 			}
 		}
@@ -88,7 +89,7 @@ func openStore(path string) (*store, error) {
 			return nil, e
 		}
 		if !found {
-			if _, e = db.Exec("ALTER TABLE " + table + " ADD COLUMN media TEXT NOT NULL DEFAULT '[]'"); e != nil {
+			if _, e = db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column.name + " TEXT NOT NULL DEFAULT '" + column.fallback + "'"); e != nil {
 				db.Close()
 				return nil, e
 			}
