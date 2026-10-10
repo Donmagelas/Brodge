@@ -66,7 +66,9 @@ extendedKeyUsage=critical,codeSigning
 subjectKeyIdentifier=hash
 EOF
         openssl req -new -newkey rsa:3072 -nodes -x509 -days 3650 -config "$work/certificate.cnf" -keyout "$work/private.pem" -out "$certificate" 2>/dev/null
-        openssl pkcs12 -export -inkey "$work/private.pem" -in "$certificate" -out "$work/identity.p12" -passout "file:$password_file"
+        # Apple security cannot import OpenSSL 3's default PKCS#12 algorithms.
+        # This password-protected transport exists only until keychain import.
+        openssl pkcs12 -export -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 -inkey "$work/private.pem" -in "$certificate" -out "$work/identity.p12" -passout "file:$password_file"
         security import "$work/identity.p12" -k "$keychain" -P "$password" -T /usr/bin/codesign >/dev/null
         security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
         openssl x509 -in "$certificate" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g' > "$identity_file"

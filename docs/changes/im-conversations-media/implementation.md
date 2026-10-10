@@ -208,3 +208,4 @@
 - 2026-10-10 本机两构建验收通过：A 的 cdhash 为 `3fd3f223a4c74747d496d7e4c8c293601c798d6e`，替换成 B 后为 `cab537788278621a6858f84cf79785b4c11f24ea`；指定要求相同，B 满足 A 的要求，签名严格验证通过。A 自检已授权，停止、替换、重新启动 B 后仍自检已授权，中途没有再次授权。当前运行 B。证据保存在忽略的 `.state/signing-verification/build-a.json` 和 `build-b.json`。
 - 签名验收只证明本机此次更新保留权限；不能代替首次创建／真实群聊验收。用户随后点击重试，确认 Desktop 进入新建页面但尚未输入；持久错误为 `desktop-empty-composer-not-confirmed`，消息仍未提交，继续修正输入框识别。
 - 本轮重新通过 `go test ./...`、`go test -race ./...`、`go vet ./...`、`npm run build --prefix web`、脚本语法和 diff 检查。Brodge 配置、token、飞书配对、Codex 配置及模型目录文件均与换版前校验值一致。
+- 远端 macOS CI 的测试／race／vet／Web／二进制构建通过，首次签名初始化因 OpenSSL 3 的默认 PKCS#12 格式与 Apple `security import` 不兼容而失败（MAC verification failed）。临时导入文件改为显式使用 Apple 支持的 PBE／MAC 算法；只影响首次导入过程，既有固定证书和钥匙串不变，等待新 CI 验证。
