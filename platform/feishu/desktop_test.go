@@ -60,7 +60,7 @@ func desktopEvent(t *testing.T, chatType string, mention bool) *larkim.P2Message
 	return &e
 }
 func TestDesktopIngressValidatesOfficialSdkIdentityAndRealMention(t *testing.T) {
-	p := &Platform{desktopBound: true, desktopTenant: "tenant", appID: "app", platformName: "feishu", allowFrom: "actor", allowChat: "chat", botOpenID: "bot"}
+	p := &Platform{desktopBound: true, desktopTenant: "tenant", appID: "app", platformName: "feishu", allowFrom: "actor", botOpenID: "bot"}
 	calls := 0
 	p.SetConversationHandler(func(_ context.Context, _ core.Platform, m *core.Message) error {
 		calls++
@@ -85,7 +85,7 @@ func TestDesktopIngressValidatesOfficialSdkIdentityAndRealMention(t *testing.T) 
 		func(e *larkim.P2MessageReceiveV1) { e.EventV2Base.Header.AppID = "other" },
 		func(e *larkim.P2MessageReceiveV1) { e.EventV2Base.Header.TenantKey = "other" },
 		func(e *larkim.P2MessageReceiveV1) { s := "other"; e.Event.Sender.SenderId.OpenId = &s },
-		func(e *larkim.P2MessageReceiveV1) { s := "other"; e.Event.Message.ChatId = &s },
+		func(e *larkim.P2MessageReceiveV1) { s := ""; e.Event.Message.ChatId = &s },
 		func(e *larkim.P2MessageReceiveV1) { s := "app"; e.Event.Sender.SenderType = &s },
 	} {
 		e := desktopEvent(t, "group", true)
@@ -97,14 +97,69 @@ func TestDesktopIngressValidatesOfficialSdkIdentityAndRealMention(t *testing.T) 
 	}
 }
 func TestDesktopIngressPersistenceFailureReachesDispatcher(t *testing.T) {
-	p := &Platform{desktopBound: true, desktopTenant: "tenant", appID: "app", allowFrom: "actor", allowChat: "chat"}
+	p := &Platform{desktopBound: true, desktopTenant: "tenant", appID: "app", allowFrom: "actor"}
 	p.SetConversationHandler(func(context.Context, core.Platform, *core.Message) error { return fmt.Errorf("database unavailable") })
 	if err := p.onDesktopMessage(context.Background(), desktopEvent(t, "p2p", false)); err == nil {
 		t.Fatal("persistence error ACKed")
 	}
 }
+
+func TestCreatorCanUseAnyChatWithoutGroupAllowlist(t *testing.T) {
+	// Legacy allow_chat must no longer restrict where the creator can use the bot.
+	platform, err := New(map[string]any{"app_id": "app", "app_secret": "secret", "tenant_key": "tenant", "allow_from": "actor", "allow_chat": "old-private-chat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := platform.(*Platform)
+	p.botOpenID = "bot"
+	var received []*core.Message
+	p.SetConversationHandler(func(_ context.Context, _ core.Platform, m *core.Message) error {
+		if !p.AcceptConversationOrigin(*m.ConversationOrigin) {
+			t.Fatal("accepted ingress cannot be replied to")
+		}
+		received = append(received, m)
+		return nil
+	})
+	for _, chat := range []string{"private", "group-one", "group-two"} {
+		kind := "group"
+		if chat == "private" {
+			kind = "p2p"
+		}
+		e := desktopEvent(t, kind, kind == "group")
+		e.Event.Message.ChatId = &chat
+		if err := p.onDesktopMessage(context.Background(), e); err != nil {
+			t.Fatal(err)
+		}
+		other := "other-user"
+		e.Event.Sender.SenderId.OpenId = &other
+		if err := p.onDesktopMessage(context.Background(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(received) != 3 || received[0].SessionKey == received[1].SessionKey || received[1].SessionKey == received[2].SessionKey {
+		t.Fatal("creator chats were rejected, mixed, or another user was admitted")
+	}
+	e := desktopEvent(t, "group", false)
+	if err := p.onDesktopMessage(context.Background(), e); err != nil || len(received) != 3 {
+		t.Fatal("group input without a real bot mention was admitted", err)
+	}
+	for _, m := range received {
+		origin := *m.ConversationOrigin
+		origin.Actor = "other-user"
+		if p.AcceptConversationOrigin(origin) {
+			t.Fatal("reply accepted another user")
+		}
+		origin.Actor, origin.ChatID = "actor", ""
+		if p.AcceptConversationOrigin(origin) {
+			t.Fatal("reply accepted missing chat")
+		}
+	}
+	if _, err := New(map[string]any{"app_id": "app", "app_secret": "secret", "tenant_key": "tenant", "allow_from": "actor"}); err != nil {
+		t.Fatal("group allowlist is still required", err)
+	}
+}
 func TestDesktopReplyRefusesForeignOriginBeforeNetwork(t *testing.T) {
-	p := &Platform{desktopBound: true, desktopTenant: "tenant", appID: "app", allowFrom: "actor", allowChat: "chat"}
+	p := &Platform{desktopBound: true, desktopTenant: "tenant", appID: "app", allowFrom: "actor"}
 	_, err := p.ReplyConversation(context.Background(), core.ConversationOrigin{AppID: "other"}, "uuid", "hello")
 	if err == nil {
 		t.Fatal("foreign reply admitted")
@@ -123,7 +178,7 @@ func TestDesktopAllowlistRejectsWhitespaceAndWildcard(t *testing.T) {
 }
 
 func TestDesktopOfficialSdkDispatcherPreservesDurableFailure(t *testing.T) {
-	p := &Platform{desktopBound: true, desktopTenant: "tenant", appID: "app", allowFrom: "actor", allowChat: "chat"}
+	p := &Platform{desktopBound: true, desktopTenant: "tenant", appID: "app", allowFrom: "actor"}
 	p.SetConversationHandler(func(context.Context, core.Platform, *core.Message) error { return fmt.Errorf("storage failure") })
 	d := dispatcher.NewEventDispatcher("", "").OnP2MessageReceiveV1(p.onDesktopMessage)
 	e := desktopEvent(t, "p2p", false)
@@ -160,7 +215,7 @@ func TestDesktopOfficialSdkReplyUsesOriginalMessageAndUuid(t *testing.T) {
 		fmt.Fprint(w, `{"code":0,"data":{"message_id":"receipt"}}`)
 	}))
 	defer server.Close()
-	p := &Platform{desktopBound: true, desktopTenant: "tenant", appID: "local-test-app", allowFrom: "actor", allowChat: "chat", client: lark.NewClient("local-test-app", "fake-local-secret", lark.WithOpenBaseUrl(server.URL), lark.WithHttpClient(server.Client()))}
+	p := &Platform{desktopBound: true, desktopTenant: "tenant", appID: "local-test-app", allowFrom: "actor", client: lark.NewClient("local-test-app", "fake-local-secret", lark.WithOpenBaseUrl(server.URL), lark.WithHttpClient(server.Client()))}
 	origin := core.ConversationOrigin{AppID: p.appID, Tenant: "tenant", Actor: "actor", ChatID: "chat", ChatType: "group", MessageID: "original", ThreadID: "topic"}
 	id, err := p.ReplyConversation(context.Background(), origin, "persisted-uuid", "hello")
 	if err != nil || id != "receipt" || replies != 1 {
@@ -260,7 +315,7 @@ func TestOfficialSDKResourceReactionMarkdownUploadAndMediaReply(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	p := &Platform{desktopBound: true, appID: "resource-test", desktopTenant: "tenant", allowFrom: "actor", allowChat: "chat", client: lark.NewClient("resource-test", "local-secret", lark.WithOpenBaseUrl(server.URL), lark.WithHttpClient(server.Client()))}
+	p := &Platform{desktopBound: true, appID: "resource-test", desktopTenant: "tenant", allowFrom: "actor", client: lark.NewClient("resource-test", "local-secret", lark.WithOpenBaseUrl(server.URL), lark.WithHttpClient(server.Client()))}
 	o := core.ConversationOrigin{AppID: p.appID, Tenant: "tenant", ChatType: "p2p", ChatID: "chat", Actor: "actor", MessageID: "original"}
 	if _, err := p.ReactConversation(context.Background(), o, "OK"); err != nil {
 		t.Fatal(err)

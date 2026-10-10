@@ -189,6 +189,9 @@ func testAgent(t *testing.T, socket string) *Agent {
 	}
 	a.timeout = 200 * time.Millisecond
 	a.openThread = nil // Unit tests must never navigate the user's Desktop.
+	a.prepareNew = func(context.Context, string, []core.ConversationMedia) (desktopDraft, error) {
+		return nil, fmt.Errorf("test-ui-unavailable")
+	}
 	t.Cleanup(func() { _ = a.Stop() })
 	return a
 }
@@ -218,6 +221,440 @@ func count(t *testing.T, s *store, query string, args ...any) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+type fakeDraft struct {
+	submit func() (string, error)
+	closed bool
+}
+
+func (d *fakeDraft) Submit(context.Context) (string, error) { return d.submit() }
+func (d *fakeDraft) Close()                                 { d.closed = true }
+
+func uiTurn(thread, prompt string) wire {
+	s := idleState(thread)
+	s["workspaceKind"] = "projectless"
+	s["turns"] = []any{wire{"turnId": "ui-turn-" + thread, "status": "inProgress", "params": wire{"clientUserMessageId": "ui-message-" + thread, "input": []any{wire{"type": "text", "text": prompt}}}, "items": []any{}}}
+	return s
+}
+
+func TestCUJ_PairBeforeBindingAndSwitchExistingChats(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	o := *incoming("A", "DM", "pair", "code").ConversationOrigin
+	if err := a.BindPairedConversation(context.Background(), p, o, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.HandleConversation(context.Background(), p, incoming("A", "DM", "pair", "secret-pair-code")); err != nil {
+		t.Fatal(err)
+	}
+	if count(t, a.store, `SELECT count(*) FROM inbox WHERE state='paired'`) != 1 {
+		t.Fatal("pair not registered")
+	}
+	if err := a.BindConversation(context.Background(), originKey(o), "codex://threads/T1?hostId=local"); err != nil {
+		t.Fatal(err)
+	}
+	accept(t, a, p, incoming("A", "DM", "bind2", "/bind T2"))
+	accept(t, a, p, incoming("A", "DM", "list", "/list"))
+	accept(t, a, p, incoming("A", "DM", "switch", "/switch T1"))
+	accept(t, a, p, incoming("A", "DM", "current", "/current"))
+	accept(t, a, p, incoming("A", "DM", "new", "/new"))
+	for i := 0; i < 4; i++ {
+		step(t, a)
+	}
+	if count(t, a.store, `SELECT count(*) FROM jobs`) != 0 || f.starts != 0 {
+		t.Fatal("command or pairing submitted a model turn")
+	}
+	var listReply, current string
+	for _, r := range p.sent {
+		if r.o.MessageID == "list" {
+			listReply = r.text
+		}
+		if r.o.MessageID == "current" {
+			current = r.text
+		}
+	}
+	if !strings.Contains(listReply, "T1") || !strings.Contains(listReply, "* T2") || !strings.Contains(current, "T1") {
+		t.Fatal("list or current did not track switching")
+	}
+	if count(t, a.store, `SELECT count(*) FROM binding_threads`) != 2 {
+		t.Fatal("switch discarded previous conversation")
+	}
+}
+
+func TestCUJ_FirstCreationFollowupsAndOriginalSource(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	prepares, sends := 0, 0
+	a.prepareNew = func(_ context.Context, prompt string, _ []core.ConversationMedia) (desktopDraft, error) {
+		prepares++
+		return &fakeDraft{submit: func() (string, error) {
+			sends++
+			f.mu.Lock()
+			f.states["T3"] = uiTurn("T3", prompt)
+			f.mu.Unlock()
+			return "codex://threads/T3?hostId=local", nil
+		}}, nil
+	}
+	first := incoming("A", "DM", "first", "remember pine47")
+	for _, m := range []*core.Message{first, first, incoming("A", "DM", "second", "recall"), incoming("A", "DM", "third", "increment")} {
+		if err := a.HandleConversation(context.Background(), p, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	step(t, a)
+	if prepares != 1 || sends != 1 || f.starts != 0 || count(t, a.store, `SELECT count(*) FROM jobs WHERE turn='ui-turn-T3' AND state='running'`) != 1 {
+		t.Fatal("creation sent the first input twice or failed to adopt it")
+	}
+	step(t, a)
+	if f.starts != 0 {
+		t.Fatal("second input overtook first turn")
+	}
+	f.finish("T3", "remembered", false)
+	step(t, a)
+	step(t, a)
+	if f.starts != 1 {
+		t.Fatal("second input did not continue created chat")
+	}
+	f.finish("T3", "pine47", false)
+	step(t, a)
+	step(t, a)
+	if f.starts != 2 {
+		t.Fatal("third input did not continue created chat")
+	}
+	f.finish("T3", "pine48", false)
+	step(t, a)
+	if prepares != 1 || sends != 1 || count(t, a.store, `SELECT count(*) FROM jobs WHERE thread='T3' AND state='finished'`) != 3 {
+		t.Fatal("incorrect creation/followup count")
+	}
+	for _, r := range p.sent {
+		if r.o.ChatID != "DM" || r.o.Actor != "A" {
+			t.Fatal("result left original source")
+		}
+	}
+	if len(p.sent) != 3 {
+		t.Fatalf("got %d replies", len(p.sent))
+	}
+}
+
+func TestCUJ_CreationUnknownSendRecoversWithoutResending(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	sends := 0
+	a.prepareNew = func(_ context.Context, prompt string, _ []core.ConversationMedia) (desktopDraft, error) {
+		return &fakeDraft{submit: func() (string, error) {
+			sends++
+			f.mu.Lock()
+			f.states["T3"] = uiTurn("T3", prompt)
+			f.mu.Unlock()
+			return "", fmt.Errorf("lost-ui-link")
+		}}, nil
+	}
+	accept(t, a, p, incoming("A", "DM", "first", "original"))
+	step(t, a)
+	id := "ingress:app:tenant:first"
+	if err := a.store.recover(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		step(t, a)
+	}
+	if err := a.RetryConversationCreation(context.Background(), id, ""); err == nil {
+		t.Fatal("unknown send retried")
+	}
+	if err := a.RetryConversationCreation(context.Background(), id, "T1"); err == nil {
+		t.Fatal("unrelated existing chat adopted")
+	}
+	if count(t, a.store, `SELECT count(*) FROM bindings`) != 0 {
+		t.Fatal("invalid candidate changed binding")
+	}
+	if err := a.RetryConversationCreation(context.Background(), id, "T3"); err != nil {
+		t.Fatal(err)
+	}
+	f.finish("T3", "result", false)
+	step(t, a)
+	if sends != 1 || f.starts != 0 || count(t, a.store, `SELECT count(*) FROM jobs WHERE state='finished' AND thread='T3'`) != 1 {
+		t.Fatal("recovery resubmitted original")
+	}
+}
+
+func TestCUJ_CreationWaitsForFirstTurnEvidenceWithoutResending(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	sends := 0
+	a.prepareNew = func(_ context.Context, prompt string, _ []core.ConversationMedia) (desktopDraft, error) {
+		return &fakeDraft{submit: func() (string, error) {
+			sends++
+			state := uiTurn("T3", prompt)
+			state["turns"] = []any{}
+			f.mu.Lock()
+			f.states["T3"] = state
+			f.mu.Unlock()
+			return "T3", nil
+		}}, nil
+	}
+	accept(t, a, p, incoming("A", "DM", "first", "original"))
+	step(t, a)
+	if count(t, a.store, `SELECT count(*) FROM jobs WHERE state='create_verifying'`) != 1 || count(t, a.store, `SELECT count(*) FROM bindings`) != 0 {
+		t.Fatal("empty initial snapshot was adopted or stopped evidence recovery")
+	}
+	if err := a.store.recover(); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.states["T3"] = uiTurn("T3", "original")
+	f.mu.Unlock()
+	step(t, a)
+	f.finish("T3", "result", false)
+	step(t, a)
+	if sends != 1 || f.starts != 0 || count(t, a.store, `SELECT count(*) FROM jobs WHERE state='finished' AND thread='T3'`) != 1 {
+		t.Fatal("evidence recovery resubmitted or lost first turn")
+	}
+}
+
+func TestCUJ_CreationBeforeSendFailureAndOtherEntryProgress(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	prepares := 0
+	a.prepareNew = func(context.Context, string, []core.ConversationMedia) (desktopDraft, error) {
+		prepares++
+		return nil, fmt.Errorf("permission-required")
+	}
+	accept(t, a, p, incoming("A", "DM", "first", "first"))
+	step(t, a)
+	for i := 0; i < 2; i++ {
+		step(t, a)
+	}
+	if prepares != 1 {
+		t.Fatal("failed preparation repeated UI actions")
+	}
+	accept(t, a, p, incoming("A", "GROUP", "bind", "/bind T1"))
+	accept(t, a, p, incoming("A", "GROUP", "group-input", "group"))
+	step(t, a)
+	if f.starts != 1 {
+		t.Fatal("failed creation blocked unrelated bound chat")
+	}
+	id := "ingress:app:tenant:first"
+	if err := a.RetryConversationCreation(context.Background(), id, ""); err != nil {
+		t.Fatal(err)
+	}
+	step(t, a)
+	if prepares != 2 {
+		t.Fatal("explicit safe retry not processed")
+	}
+	if _, err := a.store.db.Exec(`UPDATE jobs SET state='create_preparing' WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.recover(); err != nil {
+		t.Fatal(err)
+	}
+	if count(t, a.store, `SELECT count(*) FROM jobs WHERE id=? AND state='create_failed'`, id) != 1 {
+		t.Fatal("preparing recovery unsafe")
+	}
+	if _, err := a.store.db.Exec(`UPDATE jobs SET state='create_sending' WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.recover(); err != nil {
+		t.Fatal(err)
+	}
+	if count(t, a.store, `SELECT count(*) FROM jobs WHERE id=? AND state='create_uncertain'`, id) != 1 {
+		t.Fatal("sending recovery unsafe")
+	}
+}
+
+func TestCUJ_CreationAndManualBindingKeepAcceptedDestination(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	a.prepareNew = func(_ context.Context, prompt string, _ []core.ConversationMedia) (desktopDraft, error) {
+		return &fakeDraft{submit: func() (string, error) {
+			f.mu.Lock()
+			f.states["T3"] = uiTurn("T3", prompt)
+			f.mu.Unlock()
+			return "T3", nil
+		}}, nil
+	}
+	first := incoming("A", "DM", "first", "initial")
+	if err := a.HandleConversation(context.Background(), p, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.BindConversation(context.Background(), originKey(*first.ConversationOrigin), "T2"); err != nil {
+		t.Fatal(err)
+	}
+	step(t, a)
+	if count(t, a.store, `SELECT count(*) FROM bindings WHERE thread='T2'`) != 1 || count(t, a.store, `SELECT count(*) FROM jobs WHERE thread='T3'`) != 1 {
+		t.Fatal("creation overwrote manual binding or first input retargeted")
+	}
+	accept(t, a, p, incoming("A", "DM", "after", "later"))
+	step(t, a)
+	if count(t, a.store, `SELECT count(*) FROM jobs WHERE thread='T2'`) != 1 {
+		t.Fatal("later message ignored manual binding")
+	}
+}
+
+func TestCUJ_CreationRevalidatesAuthorizationBeforeSend(t *testing.T) {
+	_, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &scopePlatform{fakePlatform: &fakePlatform{}, allowed: true}
+	sends := 0
+	a.prepareNew = func(context.Context, string, []core.ConversationMedia) (desktopDraft, error) {
+		p.allowed = false
+		return &fakeDraft{submit: func() (string, error) { sends++; return "T3", nil }}, nil
+	}
+	if err := a.HandleConversation(context.Background(), p, incoming("A", "DM", "first", "original")); err != nil {
+		t.Fatal(err)
+	}
+	step(t, a)
+	if sends != 0 || count(t, a.store, `SELECT count(*) FROM bindings`) != 0 {
+		t.Fatal("revoked origin submitted UI input")
+	}
+}
+
+func TestFirstCreationEvidenceRejectsChangedInputAndProject(t *testing.T) {
+	for _, tc := range []string{"text", "client", "project", "multiple"} {
+		t.Run(tc, func(t *testing.T) {
+			s := uiTurn("T3", "hello")
+			turn := obj(list(s["turns"])[0])
+			params := obj(turn["params"])
+			switch tc {
+			case "text":
+				params["input"] = []any{wire{"type": "text", "text": "different"}}
+			case "client":
+				delete(params, "clientUserMessageId")
+			case "project":
+				s["workspaceKind"] = "project"
+			case "multiple":
+				s["turns"] = append(list(s["turns"]), wire{"turnId": "other", "status": "completed", "params": wire{}, "items": []any{}})
+			}
+			if _, err := firstCreationTurn(s, "T3", "hello", nil); err == nil {
+				t.Fatal("uncertain evidence accepted")
+			}
+		})
+	}
+}
+
+func TestCreationDefaultShortcutsRejectRemappingAndCollisions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keybindings.json")
+	if err := checkCreationKeymap(path); err != nil {
+		t.Fatal("absent user overrides rejected", err)
+	}
+	for _, tc := range []struct {
+		body string
+		ok   bool
+	}{
+		{`[]`, true},
+		{`[{"command":"newProjectlessTask","key":"Command+Option+O"}]`, true},
+		{`[{"command":"copyDeeplink","key":"CmdOrCtrl+Alt+L"}]`, true},
+		{`[{"command":"unrelated","key":"Cmd+J"}]`, true},
+		{`[{"command":"newProjectlessTask","key":null}]`, false},
+		{`[{"command":"copyDeeplink","key":"Cmd+J"}]`, false},
+		{`[{"command":"-newProjectlessTask","key":"Command+Alt+O"}]`, false},
+		{`[{"command":"unrelated","key":"Option+Command+L"}]`, false},
+		{`invalid-json`, false},
+	} {
+		if err := os.WriteFile(path, []byte(tc.body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkCreationKeymap(path); (err == nil) != tc.ok {
+			t.Fatalf("body %s: %v", tc.body, err)
+		}
+	}
+}
+
+func TestCUJ_FirstCreationPreservesMediaAndDoesNotResubmit(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &mediaPlatform{data: []byte("original media bytes")}
+	sends := 0
+	a.prepareNew = func(_ context.Context, prompt string, media []core.ConversationMedia) (desktopDraft, error) {
+		if len(media) != 2 || media[0].Kind != "image" || media[1].Kind != "file" {
+			t.Fatal("first input resources lost")
+		}
+		return &fakeDraft{submit: func() (string, error) {
+			sends++
+			state := uiTurn("T3", prompt)
+			obj(obj(list(state["turns"])[0])["params"])["input"] = []any{wire{"type": "text", "text": "# Files mentioned\n" + media[1].Path + "\n" + prompt}, wire{"type": "localImage", "path": media[0].Path}}
+			f.mu.Lock()
+			f.states["T3"] = state
+			f.mu.Unlock()
+			return "T3", nil
+		}}, nil
+	}
+	m := incoming("A", "DM", "first-media", "read both")
+	m.Media = []core.ConversationMedia{{Kind: "image", Key: "image-key", Name: "image.png"}, {Kind: "file", Key: "file-key", Name: "file.txt"}}
+	if err := a.HandleConversation(context.Background(), p, m); err != nil {
+		t.Fatal(err)
+	}
+	step(t, a)
+	f.finish("T3", "both read", false)
+	step(t, a)
+	if p.downloads != 2 || sends != 1 || f.starts != 0 || count(t, a.store, `SELECT count(*) FROM jobs WHERE state='finished'`) != 1 {
+		t.Fatal("media first turn was lost or repeated")
+	}
+}
+
+func TestCUJ_TwoNewGroupEntriesKeepIndependentBindings(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	sends := 0
+	a.prepareNew = func(_ context.Context, prompt string, _ []core.ConversationMedia) (desktopDraft, error) {
+		thread := "T3"
+		if prompt == "group two" {
+			thread = "T4"
+		}
+		return &fakeDraft{submit: func() (string, error) {
+			sends++
+			f.mu.Lock()
+			f.states[thread] = uiTurn(thread, prompt)
+			f.mu.Unlock()
+			return thread, nil
+		}}, nil
+	}
+	for i, chat := range []string{"G1", "G2"} {
+		prompt := "group one"
+		if i == 1 {
+			prompt = "group two"
+		}
+		m := incoming("A", chat, "first-"+chat, prompt)
+		m.ConversationOrigin.ChatType = "group"
+		if err := a.HandleConversation(context.Background(), p, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	step(t, a)
+	step(t, a)
+	if sends != 2 || count(t, a.store, `SELECT count(*) FROM bindings`) != 2 {
+		t.Fatal("group creation not independent")
+	}
+	f.finish("T3", "group-one-result", false)
+	f.finish("T4", "group-two-result", false)
+	for i := 0; i < 3; i++ {
+		step(t, a)
+	}
+	for _, r := range p.sent {
+		if r.text == "group-one-result" && r.o.ChatID != "G1" || r.text == "group-two-result" && r.o.ChatID != "G2" {
+			t.Fatal("cross-group result")
+		}
+	}
+	accept(t, a, p, incoming("A", "G2", "cross-switch", "/switch T3"))
+	step(t, a)
+	if count(t, a.store, `SELECT count(*) FROM bindings WHERE origin=? AND thread='T4'`, originKey(*incoming("A", "G2", "x", "").ConversationOrigin)) != 1 {
+		t.Fatal("foreign group thread was switched")
+	}
+}
+
+func TestThreadLinksRequireLocalHost(t *testing.T) {
+	for _, s := range []string{"codex://threads/T1?hostId=remote", "codex://someone@threads/T1", "codex://threads/T1/extra", "codex://other/T1"} {
+		if _, err := parseThread(s); err == nil {
+			t.Fatalf("accepted %q", s)
+		}
+	}
 }
 
 func TestCUJ_BindChatQuestionSwitchAndOriginalReply(t *testing.T) {

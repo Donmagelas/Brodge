@@ -31,7 +31,7 @@ func (p *Platform) onDesktopMessage(ctx context.Context, event *larkim.P2Message
 		return nil
 	}
 	actor, chat, kind := stringValue(s.SenderId.OpenId), stringValue(m.ChatId), stringValue(m.ChatType)
-	if actor == "" || chat == "" || stringValue(m.MessageId) == "" || !core.AllowList(p.allowFrom, actor) || !core.AllowList(p.allowChat, chat) {
+	if actor == "" || chat == "" || stringValue(m.MessageId) == "" || !core.AllowList(p.allowFrom, actor) {
 		return nil
 	}
 	if kind != "p2p" && kind != "group" {
@@ -167,7 +167,7 @@ func (p *Platform) ReplyConversation(ctx context.Context, origin core.Conversati
 
 func (p *Platform) AcceptConversationOrigin(origin core.ConversationOrigin) bool {
 	return p.desktopBound && origin.AppID == p.appID && origin.Tenant == p.desktopTenant && origin.MessageID != "" &&
-		(origin.ChatType == "p2p" || origin.ChatType == "group") && core.AllowList(p.allowFrom, origin.Actor) && core.AllowList(p.allowChat, origin.ChatID)
+		(origin.ChatType == "p2p" || origin.ChatType == "group") && core.AllowList(p.allowFrom, origin.Actor) && origin.ChatID != ""
 }
 
 func (p *Platform) ReactConversation(ctx context.Context, origin core.ConversationOrigin, emoji string) (string, error) {

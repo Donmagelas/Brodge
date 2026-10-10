@@ -149,19 +149,22 @@ func (s *store) ingest(p core.Platform, msg *core.Message) error {
 	}
 	// A quickly following message observes an earlier queued binding command,
 	// while unrelated later Web switches cannot retarget an accepted message.
-	rows, err := tx.Query(`SELECT message,body FROM inbox WHERE app=? AND tenant=? AND key=? AND state='ready' ORDER BY rowid`, o.AppID, o.Tenant, originKey(o))
+	rows, err := tx.Query(`SELECT message,body,state FROM inbox WHERE app=? AND tenant=? AND key=? AND state IN ('ready','creating') ORDER BY rowid`, o.AppID, o.Tenant, originKey(o))
 	if err != nil {
 		return err
 	}
 	afterBinding := ""
 	for rows.Next() {
-		var id, body string
-		if err = rows.Scan(&id, &body); err != nil {
+		var id, body, previousState string
+		if err = rows.Scan(&id, &body, &previousState); err != nil {
 			rows.Close()
 			return err
 		}
 		fields := strings.Fields(body)
 		if len(fields) > 0 && (strings.EqualFold(fields[0], "/bind") || strings.EqualFold(fields[0], "/switch")) {
+			afterBinding = id
+		}
+		if boundThread == "" && !strings.HasPrefix(strings.TrimSpace(msg.Content), "/") && (previousState == "creating" || !strings.HasPrefix(strings.TrimSpace(body), "/")) {
 			afterBinding = id
 		}
 	}
@@ -212,7 +215,7 @@ func (s *store) claim(owner string) (job, error) {
 	return j, tx.Commit()
 }
 func (s *store) recover() error {
-	_, err := s.db.Exec(`UPDATE jobs SET state=CASE WHEN state='claimed' THEN 'queued' ELSE 'uncertain' END,owner='' WHERE state IN ('claimed','dispatch'); UPDATE questions SET state='uncertain' WHERE state='dispatch'; UPDATE outbox SET state='uncertain' WHERE state='sending'`)
+	_, err := s.db.Exec(`UPDATE jobs SET state=CASE WHEN state='claimed' THEN 'queued' ELSE 'uncertain' END,owner='' WHERE state IN ('claimed','dispatch'); UPDATE jobs SET state='create_failed',error='interrupted-before-send' WHERE state='create_preparing'; UPDATE jobs SET state='create_uncertain',error='creation-send-outcome-unknown' WHERE state='create_sending'; UPDATE questions SET state='uncertain' WHERE state='dispatch'; UPDATE outbox SET state='uncertain' WHERE state='sending'`)
 	return err
 }
 func (s *store) output(tx *sql.Tx, id, kind, source, platform, text string) error {

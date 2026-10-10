@@ -39,6 +39,8 @@ type Agent struct {
 	attach        func(context.Context, string, string, time.Duration) (*attachment, error)
 	openThread    func(context.Context, string) error
 	nextOpen      map[string]time.Time
+	prepareNew    func(context.Context, string, []core.ConversationMedia) (desktopDraft, error)
+	creationMu    sync.Mutex
 }
 
 var _ core.Agent = (*Agent)(nil)
@@ -114,6 +116,7 @@ func New(opts map[string]any) (*Agent, error) {
 	}
 	a := &Agent{store: s, dataDir: data, i18n: core.NewI18n(core.NormalizeLanguageString(str(opts["language"]))), allowed: allowed, socket: str(opts["socket"]), nativeAnswers: opts["native_answers"] == true, timeout: 5 * time.Second, poll: time.Second, platforms: map[string]core.Platform{}, owner: uuid.NewString(), lock: lock, openThread: openDesktopThread, nextOpen: map[string]time.Time{}}
 	a.attach = a.attachWithActivation
+	a.prepareNew = prepareDesktopDraft
 	return a, nil
 }
 func (a *Agent) Name() string { return "codex-desktop" }
@@ -255,7 +258,7 @@ func (a *Agent) BindConversation(ctx context.Context, key, thread string) error 
 		return err
 	}
 	if known == 0 {
-		return fmt.Errorf("send /current from the authorized Feishu chat first")
+		return fmt.Errorf("入口尚未认证，请先完成飞书私聊配对，或在群内 @ 机器人发送 /bind 会话链接")
 	}
 	at, err := a.attach(ctx, a.socket, thread, a.timeout)
 	if err != nil {
@@ -272,12 +275,18 @@ func (a *Agent) BindPairedConversation(ctx context.Context, p core.Platform, ori
 	if !ok || !sender.AcceptConversationOrigin(origin) || origin.ChatType != "p2p" || origin.Actor == "" || origin.ChatID == "" || origin.MessageID == "" {
 		return fmt.Errorf("verified private pairing origin required")
 	}
-	thread, err := parseThread(thread)
-	if err != nil || !a.permitted(thread) {
-		return fmt.Errorf("thread not in allowed_threads")
+	a.mu.Lock()
+	a.platforms[p.Name()] = p
+	a.mu.Unlock()
+	var err error
+	if thread != "" {
+		thread, err = parseThread(thread)
+		if err != nil || !a.permitted(thread) {
+			return fmt.Errorf("thread not in allowed_threads")
+		}
 	}
-	var recordedSource, recordedState, recordedThread string
-	e := a.store.db.QueryRow(`SELECT i.source,i.state,b.thread FROM inbox i JOIN bindings b ON b.origin=i.key WHERE i.app=? AND i.tenant=? AND i.message=?`, origin.AppID, origin.Tenant, origin.MessageID).Scan(&recordedSource, &recordedState, &recordedThread)
+	var recordedSource, recordedState string
+	e := a.store.db.QueryRow(`SELECT source,state FROM inbox WHERE app=? AND tenant=? AND message=?`, origin.AppID, origin.Tenant, origin.MessageID).Scan(&recordedSource, &recordedState)
 	if e == nil {
 		if recordedSource != marshal(origin) || recordedState != "paired" {
 			return fmt.Errorf("pairing-message-conflict")
@@ -287,11 +296,13 @@ func (a *Agent) BindPairedConversation(ctx context.Context, p core.Platform, ori
 	if e != sql.ErrNoRows {
 		return e
 	}
-	at, err := a.attach(ctx, a.socket, thread, a.timeout)
-	if err != nil {
-		return err
+	if thread != "" {
+		at, err := a.attach(ctx, a.socket, thread, a.timeout)
+		if err != nil {
+			return err
+		}
+		at.c.abort(fmt.Errorf("detached"))
 	}
-	at.c.abort(fmt.Errorf("detached"))
 	tx, err := a.store.db.Begin()
 	if err != nil {
 		return err
@@ -311,6 +322,9 @@ func (a *Agent) BindPairedConversation(ctx context.Context, p core.Platform, ori
 		}
 	} else {
 		return err
+	}
+	if thread == "" {
+		return tx.Commit()
 	}
 	var existingThread string
 	err = tx.QueryRow(`SELECT thread FROM bindings WHERE origin=?`, key).Scan(&existingThread)
@@ -376,7 +390,7 @@ func (a *Agent) ConversationState() any {
 		err := rows.Scan(&key, &thread)
 		return map[string]string{"session_key": key, "thread": thread}, err
 	})
-	query("messages", `SELECT id,thread,state,error FROM jobs ORDER BY rowid DESC LIMIT 30`, func(rows *sql.Rows) (any, error) {
+	query("messages", `SELECT id,thread,state,error FROM jobs WHERE state LIKE 'create_%' OR rowid IN (SELECT rowid FROM jobs ORDER BY rowid DESC LIMIT 30) ORDER BY rowid DESC`, func(rows *sql.Rows) (any, error) {
 		var id, thread, state, e string
 		err := rows.Scan(&id, &thread, &state, &e)
 		return map[string]string{"id": id, "thread": thread, "state": state, "error": e}, err
@@ -393,6 +407,9 @@ func (a *Agent) step(ctx context.Context) error {
 		return err
 	}
 	if err := a.consumeInbox(ctx); err != nil {
+		return err
+	}
+	if err := a.advanceCreation(ctx); err != nil {
 		return err
 	}
 	if err := a.revalidateJobs(); err != nil {
@@ -429,15 +446,15 @@ func (a *Agent) step(ctx context.Context) error {
 }
 
 func (a *Agent) revalidateJobs() error {
-	rows, err := a.store.db.Query(`SELECT id,thread,source,platform FROM jobs WHERE state NOT IN ('finished','blocked')`)
+	rows, err := a.store.db.Query(`SELECT id,thread,source,platform,state FROM jobs WHERE state NOT IN ('finished','blocked')`)
 	if err != nil {
 		return err
 	}
-	type scope struct{ id, thread, source, platform string }
+	type scope struct{ id, thread, source, platform, state string }
 	var scopes []scope
 	for rows.Next() {
 		var s scope
-		if err = rows.Scan(&s.id, &s.thread, &s.source, &s.platform); err != nil {
+		if err = rows.Scan(&s.id, &s.thread, &s.source, &s.platform, &s.state); err != nil {
 			rows.Close()
 			return err
 		}
@@ -453,7 +470,7 @@ func (a *Agent) revalidateJobs() error {
 		p := a.platforms[s.platform]
 		a.mu.Unlock()
 		platform, ok := p.(core.DurableConversationPlatform)
-		if !a.store.linked(originKey(origin), s.thread) || !ok || !platform.AcceptConversationOrigin(origin) {
+		if !ok || !platform.AcceptConversationOrigin(origin) || (s.thread != "" && !strings.HasPrefix(s.state, "create_") && !a.store.linked(originKey(origin), s.thread)) {
 			_, err = a.store.db.Exec(`UPDATE jobs SET state='blocked',error='authorization-scope-changed' WHERE id=?`, s.id)
 			if err != nil {
 				return err

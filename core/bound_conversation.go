@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -73,9 +74,26 @@ func (m *ManagementServer) handleBoundConversation(w http.ResponseWriter, r *htt
 		var body struct {
 			SessionKey string `json:"session_key"`
 			Thread     string `json:"thread"`
+			Action     string `json:"action"`
+			ID         string `json:"id"`
 		}
 		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body) != nil {
 			mgmtError(w, http.StatusBadRequest, "invalid JSON")
+			return
+		}
+		if body.Action != "" {
+			creator, ok := bound.(interface {
+				RetryConversationCreation(context.Context, string, string) error
+			})
+			if !ok || body.Action != "recover_creation" || body.ID == "" {
+				mgmtError(w, http.StatusBadRequest, "unknown conversation action")
+				return
+			}
+			if err := creator.RetryConversationCreation(r.Context(), body.ID, body.Thread); err != nil {
+				mgmtError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			mgmtOK(w, "creation recovery recorded")
 			return
 		}
 		if err := bound.BindConversation(r.Context(), body.SessionKey, body.Thread); err != nil {

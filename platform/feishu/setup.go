@@ -510,5 +510,5 @@ func (s *Setup) PairedPlatform() (core.Platform, error) {
 	if r.PairOrigin == nil || r.ChatID == "" || r.OwnerOpenID == "" || r.AppSecret == "" {
 		return nil, fmt.Errorf("private pairing required")
 	}
-	return New(map[string]any{"app_id": r.AppID, "app_secret": r.AppSecret, "tenant_key": r.PairOrigin.Tenant, "allow_from": r.OwnerOpenID, "allow_chat": r.ChatID})
+	return New(map[string]any{"app_id": r.AppID, "app_secret": r.AppSecret, "tenant_key": r.PairOrigin.Tenant, "allow_from": r.OwnerOpenID})
 }

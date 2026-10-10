@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -22,7 +23,13 @@ func validRequestID(id any) bool {
 }
 
 func parseThread(s string) (string, error) {
-	s = strings.TrimPrefix(s, "codex://threads/")
+	if strings.HasPrefix(s, "codex://") {
+		u, err := url.Parse(s)
+		if err != nil || u.Host != "threads" || u.User != nil || u.Fragment != "" || (u.Query().Get("hostId") != "" && u.Query().Get("hostId") != "local") {
+			return "", fmt.Errorf("invalid-thread")
+		}
+		s = strings.TrimPrefix(u.Path, "/")
+	}
 	if !idPattern.MatchString(s) {
 		return "", fmt.Errorf("invalid-thread")
 	}

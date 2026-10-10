@@ -40,15 +40,19 @@ func init() {
 				_ = setup.Close()
 				return nil, err
 			}
+			target := ""
 			if len(threads) == 1 {
-				for _, p := range platforms {
-					if sender, ok := p.(core.DurableConversationPlatform); ok && sender.AcceptConversationOrigin(origin) {
-						if err := binder.BindPairedConversation(context.Background(), p, origin, threads[0].ID); err != nil {
-							_ = setup.Close()
-							return nil, err
-						}
-						break
+				target = threads[0].ID
+			}
+			// Register authenticated pairing even without a chosen conversation,
+			// so Web can bind before the first ordinary message arrives.
+			for _, p := range platforms {
+				if sender, ok := p.(core.DurableConversationPlatform); ok && sender.AcceptConversationOrigin(origin) {
+					if err := binder.BindPairedConversation(context.Background(), p, origin, target); err != nil {
+						_ = setup.Close()
+						return nil, err
 					}
+					break
 				}
 			}
 		}

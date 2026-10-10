@@ -22,14 +22,14 @@ func init() { core.RegisterPlatform("feishu", New) }
 
 type replyContext struct{ messageID, chatID, sessionKey string }
 type Platform struct {
-	mu                                                                             sync.RWMutex
-	platformName, appID, appSecret, desktopTenant, allowFrom, allowChat, botOpenID string
-	desktopBound                                                                   bool
-	client                                                                         *lark.Client
-	conversationHandler                                                            func(context.Context, core.Platform, *core.Message) error
-	cancel                                                                         context.CancelFunc
-	connected                                                                      bool
-	failure                                                                        string
+	mu                                                                  sync.RWMutex
+	platformName, appID, appSecret, desktopTenant, allowFrom, botOpenID string
+	desktopBound                                                        bool
+	client                                                              *lark.Client
+	conversationHandler                                                 func(context.Context, core.Platform, *core.Message) error
+	cancel                                                              context.CancelFunc
+	connected                                                           bool
+	failure                                                             string
 }
 
 func New(opts map[string]any) (core.Platform, error) {
@@ -38,12 +38,11 @@ func New(opts map[string]any) (core.Platform, error) {
 	p.appSecret, _ = opts["app_secret"].(string)
 	p.desktopTenant, _ = opts["tenant_key"].(string)
 	p.allowFrom, _ = opts["allow_from"].(string)
-	p.allowChat, _ = opts["allow_chat"].(string)
 	if p.appID == "" || p.appSecret == "" || p.desktopTenant == "" {
 		return nil, fmt.Errorf("feishu: app credentials and tenant required")
 	}
-	if len(strings.Split(p.allowFrom, ",")) != 1 || !explicitDesktopScope(p.allowFrom) || !explicitDesktopScope(p.allowChat) {
-		return nil, fmt.Errorf("feishu: explicit user and chat scope required")
+	if len(strings.Split(p.allowFrom, ",")) != 1 || !explicitDesktopScope(p.allowFrom) {
+		return nil, fmt.Errorf("feishu: exactly one explicit creator required")
 	}
 	p.client = lark.NewClient(p.appID, p.appSecret, lark.WithLogger(pairLogger{}), lark.WithLogLevel(larkcore.LogLevelError), lark.WithHttpClient(&http.Client{Timeout: 15 * time.Second}))
 	return p, nil

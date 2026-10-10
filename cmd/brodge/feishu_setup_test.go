@@ -14,6 +14,7 @@ import (
 type setupBindingAgent struct {
 	threads []core.AgentSessionInfo
 	bound   string
+	paired  bool
 	fail    bool
 }
 
@@ -33,6 +34,7 @@ func (a *setupBindingAgent) BindPairedConversation(_ context.Context, _ core.Pla
 		return fmt.Errorf("pairing-message-conflict")
 	}
 	a.bound = thread
+	a.paired = true
 	return nil
 }
 
@@ -54,7 +56,7 @@ func TestDesktopSetupStartupBindsOnlyUnambiguousAuthorizedPair(t *testing.T) {
 		threads             int
 		allowed, fail, want bool
 	}{
-		{"single", 1, true, false, true}, {"multiple", 2, true, false, false}, {"revoked", 1, false, false, false}, {"conflict", 1, true, true, false},
+		{"single", 1, true, false, true}, {"multiple", 2, true, false, false}, {"zero", 0, true, false, false}, {"revoked", 1, false, false, false}, {"conflict", 1, true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -84,6 +86,9 @@ func TestDesktopSetupStartupBindsOnlyUnambiguousAuthorizedPair(t *testing.T) {
 			defer s.Close()
 			if (a.bound == "T1") != tc.want {
 				t.Fatal("incorrect startup binding decision")
+			}
+			if a.paired != tc.allowed {
+				t.Fatal("authenticated pairing was not registered")
 			}
 		})
 	}

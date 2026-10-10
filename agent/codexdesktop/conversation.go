@@ -15,7 +15,7 @@ func (a *Agent) consumeInbox(ctx context.Context) error {
 	var app, tenant, message, source, platform, body, acceptedThread, afterBinding string
 	var mediaJSON string
 	var acceptedRevision int
-	err := a.store.db.QueryRow(`SELECT app,tenant,message,source,platform,body,bound_thread,bound_revision,after_binding,media FROM inbox WHERE state='ready' ORDER BY rowid LIMIT 1`).Scan(&app, &tenant, &message, &source, &platform, &body, &acceptedThread, &acceptedRevision, &afterBinding, &mediaJSON)
+	err := a.store.db.QueryRow(`SELECT app,tenant,message,source,platform,body,bound_thread,bound_revision,after_binding,media FROM inbox i WHERE state='ready' AND (after_binding='' OR EXISTS(SELECT 1 FROM inbox prior WHERE prior.app=i.app AND prior.tenant=i.tenant AND prior.message=i.after_binding AND prior.state='done')) ORDER BY rowid LIMIT 1`).Scan(&app, &tenant, &message, &source, &platform, &body, &acceptedThread, &acceptedRevision, &afterBinding, &mediaJSON)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -122,13 +122,20 @@ func (a *Agent) consumeInbox(ctx context.Context) error {
 				return e
 			}
 			ids = append(ids, id)
+			if id == thread {
+				ids[len(ids)-1] = "* " + id
+			}
 		}
 		e = rows.Err()
 		rows.Close()
 		if e != nil {
 			return e
 		}
-		err = reply(a.i18n.Tf(core.MsgDesktopList, strings.Join(ids, "\n")))
+		if len(ids) == 0 {
+			err = reply(a.i18n.T(core.MsgDesktopUnbound))
+		} else {
+			err = reply(a.i18n.Tf(core.MsgDesktopList, strings.Join(ids, "\n")) + "\n" + a.i18n.Tf(core.MsgDesktopCurrent, thread))
+		}
 	case "/current":
 		if bindingErr == sql.ErrNoRows {
 			err = reply(a.i18n.T(core.MsgDesktopUnbound))
@@ -142,7 +149,16 @@ func (a *Agent) consumeInbox(ctx context.Context) error {
 		if strings.TrimSpace(body) == "" && len(media) == 0 {
 			err = reply(a.i18n.T(core.MsgDesktopText))
 		} else if thread == "" {
-			err = reply(a.i18n.T(core.MsgDesktopBindUsage))
+			// The first input stays durable while UI creates and submits its turn.
+			// Following unbound inputs depend on this inbox row, not a mutable binding.
+			_, err = tx.Exec(`INSERT INTO jobs(id,origin,source,platform,thread,revision,prompt,client_message,state,media) VALUES(?,?,?,?,'',0,?,?,'create_pending',?)`, responseID, key, source, platform, body, uuid.NewString(), marshalMedia(media))
+			if err == nil {
+				_, err = tx.Exec(`UPDATE inbox SET state='creating' WHERE app=? AND tenant=? AND message=?`, app, tenant, message)
+			}
+			if err != nil {
+				return err
+			}
+			return tx.Commit()
 		} else {
 			err = a.acceptText(tx, origin, key, source, platform, thread, revision, body, media, reply)
 		}

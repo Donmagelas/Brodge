@@ -51,12 +51,11 @@ app_id = "你的应用ID"
 app_secret = "${DESKTOP_BRIDGE_FEISHU_SECRET}"
 tenant_key = "你的租户key"
 allow_from = "指定操作者的open_id"
-allow_chat = "指定私聊chat_id,指定测试群chat_id"
 ```
 
 环境变量未设置会展开为空；启动前应通过隐藏输入设置 Secret，并在本机生成非空管理 token（例如 `export DESKTOP_BRIDGE_ADMIN_TOKEN=$(openssl rand -hex 32)`，不打印）。Desktop 项目管理不接受空 token。
 
-Web 管理在 `http://127.0.0.1:18789`，用管理 token 登录。页面仅包含飞书扫码/配对、已有会话绑定、连接诊断、消息和待投递回复状态。服务商、桥接器技能管理、用户定时任务、旧 Web 聊天和通用系统设置已从代码和 HTTP 路由移除；对应页面/API 返回 404。Codex Desktop 自己的技能、模型、权限和网关能力继续正常工作。首次绑定可直接在飞书 `/bind`。App Secret 使用终端隐藏输入设置环境变量，例如 zsh `read -s 'DESKTOP_BRIDGE_FEISHU_SECRET?App Secret: '` 后 `export DESKTOP_BRIDGE_FEISHU_SECRET`，不要输入到聊天。管理 token 也只在本机生成和使用。默认不读取 Codex auth、模型或网关文件。
+Web 管理在 `http://127.0.0.1:18789`，用管理 token 登录。页面仅包含飞书扫码/配对、已有会话绑定、连接诊断、消息和待投递回复状态。服务商、桥接器技能管理、用户定时任务、旧 Web 聊天和通用系统设置已从代码和 HTTP 路由移除；对应页面/API 返回 404。Codex Desktop 自己的技能、模型、权限和网关能力继续正常工作。只允许已配对的创建者使用；创建者可私聊或在任意已加入机器人的群内 @ 它，不设群白名单。各群入口独立绑定。首次绑定可直接在飞书 `/bind`。App Secret 使用终端隐藏输入设置环境变量，例如 zsh `read -s 'DESKTOP_BRIDGE_FEISHU_SECRET?App Secret: '` 后 `export DESKTOP_BRIDGE_FEISHU_SECRET`，不要输入到聊天。管理 token 也只在本机生成和使用。默认不读取 Codex auth、模型或网关文件。
 
 ## 扫码创建应用
 
@@ -68,7 +67,7 @@ Web 管理在 `http://127.0.0.1:18789`，用管理 token 登录。页面仅包�
 
 临时配对使用同一可执行文件的短期子进程运行现有官方 WebSocket SDK，因为 SDK 的 Start 不提供可可靠取消的关闭接口；凭据仅通过 stdin 私有管道传入，日志不输出连接数据，父进程等待子进程退出后才认为完成。之后仍需明确指定可丢弃的 Desktop 会话并启动正式转发。原有通用扫码保存接口已删除；创建流程不覆盖 Desktop 模型/网关或已有飞书连接。创建区块可随后续 Web 改版移动。
 
-正式程序启动时，若已有配对记录、配置仅授权一个 Desktop 会话且飞书连接认可该来源，会直接登记配对消息并绑定该会话；不会回复配对消息或把配对码交给模型。重复启动保持绑定修订不变，来源冲突拒绝启动；授权多个会话时仍由用户通过 Web 或 `/bind` 选择。
+正式程序启动时会登记已认证的配对来源；首次登记且配置仅授权一个 Desktop 会话时自动绑定该会话。零个或多个授权会话时保持未绑定，允许在 Web 提前选择或由首条正文发起创建。不会回复配对消息或把配对码交给模型。重复启动保持绑定修订不变，来源冲突拒绝启动。
 
 ## 数据和恢复
 
@@ -89,7 +88,7 @@ SQLite：`.state/desktop/desktop/bridge.sqlite`，WAL + synchronous FULL。应�
 - 常用异步弹窗的选项和自填两条路径已在原 Desktop turn 内真实通过，本机 Brodge 配置已开启 `native_answers=true`。终止时先核对答案证据，禁止继续提交。同步 requestUserInput 和其他 picker 尚无完整真实验收；未知表单提示 Desktop 处理。远程权限审批不在本阶段。
 - 上游 `AgentSession` / CLI 生命周期和重复的 Web 聊天镜像已删除；真实发送只走持久入口，历史仅在内部通过已授权 IPC 快照用于结果归属及恢复。
 - 只验证 macOS；Unix 文件锁与 socket 实现未提供 Windows 适配。
-- `/new`／自动无项目创建未实现；未加载的会话会尝试限频深链接打开并重新连接；真实冷启动全链路尚未验收。图片／附件双向已真实验收，群媒体、复杂格式手机显示尚未验收。取消、模型/权限/工作目录管理、全部会话枚举、多机及共享用户协作不在当前范围。
+- `/new` 暂缓；自动无项目创建的原生适配和持久接续已实现并通过模拟测试，真实界面尚待验收；未加载的会话会尝试限频深链接打开并重新连接；真实冷启动全链路尚未验收。图片／附件双向已真实验收，群媒体、复杂格式手机显示尚未验收。取消、模型/权限/工作目录管理、全部会话枚举、多机及共享用户协作不在当前范围。
 - 同会话桥接队列串行，无法证明与用户在 Desktop 同时提交的原子互斥；观察到 busy 就等待，只转发本桥接器的回合。
 
 ## 可复现验证
@@ -115,7 +114,7 @@ TMPDIR=/private/tmp GOTOOLCHAIN=local GOPROXY=https://goproxy.cn,direct $HOME/.c
 
 明确指定可丢弃 Desktop 会话链接（不能是当前开发会话），授权固定的文字往返/两轮追问/绑定切换步骤；原生回答另列固定步骤，不能扩大到任意工具审批。
 
-扫码与私聊配对可取得飞书应用、租户 key、操作者 open_id 和私聊 chat_id，App Secret 留在本机。需要机器人能力、应用发布/可用范围、长连接事件 `im.message.receive_v1`，权限 `im:message.p2p_msg:readonly`、`im:message.group_at_msg:readonly`、`im:message:send_as_bot`。本次私聊条件已满足；群聊尚需用户指定测试群并添加机器人，原生问题远程回答、工具审批和 `/new` 不包含在三轮文字测试的通过结论中。
+扫码与私聊配对可取得飞书应用、租户 key、操作者 open_id 和私聊 chat_id，App Secret 留在本机。需要机器人能力、应用发布/可用范围、长连接事件 `im.message.receive_v1`，权限 `im:message.p2p_msg:readonly`、`im:message.group_at_msg:readonly`、`im:message:send_as_bot`。本次私聊条件已满足；用户已准备 `test` 群并添加机器人，真实群聊闭环尚待执行，原生问题远程回答、工具审批和 `/new` 不包含在三轮文字测试的通过结论中。
 
 2026-10-09 精简后换版验证：原 `config.desktop.local.toml`、管理 token 和 canonical 飞书配对记录逐字节未变；数据库保留 1 个 revision=1 绑定、3 个 finished 回合、9 条 sent 回复，无待发送项。新二进制 18 MB（旧全量 Web 预览程序约 73 MB）；Web JS 370 KB。实际打开原 Web 地址后显示长连接已连接及原三轮消息状态；已移除页面和全局/项目 API 在运行服务上返回 404。
 

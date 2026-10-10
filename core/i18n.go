@@ -254,8 +254,8 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Conversación actual de Codex: %s",
 	},
 	MsgDesktopHelp: {
-		LangChinese:            "/bind 会话链接：绑定\n/list：授权会话\n/switch 会话ID：切换\n/current：当前会话\n其他文字直接交给绑定的 Codex 会话。模型、权限和新建会话在 Desktop 管理。",
-		LangEnglish:            "/bind conversation-link: bind\n/list: authorized conversations\n/switch ID: switch\n/current: current conversation\nOther text goes to the bound Codex conversation. Manage models, permissions and new conversations in Desktop.",
+		LangChinese:            "/bind 会话链接：加入已有会话并绑定\n/list：本入口的会话\n/switch 会话ID：切换\n/current：当前会话\n其他文字交给当前 Codex 会话。未绑定时由 Brodge 尝试通过 Desktop 界面创建无项目会话。模型和权限仍在 Desktop 管理。",
+		LangEnglish:            "/bind conversation-link: add and bind an existing chat\n/list: chats linked to this entry\n/switch ID: switch\n/current: current chat\nOther text goes to the current Codex chat. If unbound, Brodge attempts to create a standalone chat through Desktop. Manage models and permissions in Desktop.",
 		LangTraditionalChinese: "/bind 會話連結：綁定\n/list：授權會話\n/switch 會話ID：切換\n/current：目前會話\n其他文字交給綁定的 Codex 會話。模型、權限和新會話在 Desktop 管理。",
 		LangJapanese:           "/bind 会話リンク：関連付け\n/list：許可された会話\n/switch ID：切り替え\n/current：現在の会話\n他のテキストは関連付けた Codex の会話に送ります。モデル、権限、新規会話は Desktop で管理します。",
 		LangSpanish:            "/bind enlace: vincular\n/list: conversaciones autorizadas\n/switch ID: cambiar\n/current: conversación actual\nEl texto se envía a la conversación vinculada. Gestione modelos, permisos y nuevas conversaciones en Desktop.",

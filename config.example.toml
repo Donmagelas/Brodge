@@ -19,7 +19,7 @@ native_answers = false
 # socket = "/Users/your-user/.codex/ipc/ipc.sock"
 
 # Omit platforms while using Web to create and pair an application.
-# Activate forwarding with local credentials and an explicit user/chat scope.
+# Activate forwarding with local credentials and the verified creator identity.
 [[projects.platforms]]
 type = "feishu"
 [projects.platforms.options]
@@ -27,4 +27,3 @@ app_id = "REPLACE_WITH_FEISHU_APP_ID"
 app_secret = "${DESKTOP_BRIDGE_FEISHU_SECRET}"
 tenant_key = "REPLACE_WITH_TENANT_KEY"
 allow_from = "REPLACE_WITH_OWNER_OPEN_ID"
-allow_chat = "REPLACE_WITH_CHAT_ID"

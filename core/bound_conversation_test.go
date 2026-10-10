@@ -11,8 +11,9 @@ import (
 )
 
 type boundTestAgent struct {
-	received, bound int
-	recoveryError   error
+	received, bound    int
+	recoveryError      error
+	creationRecoveries int
 }
 
 func (a *boundTestAgent) Name() string                                             { return "test" }
@@ -28,6 +29,13 @@ func (a *boundTestAgent) ResumeConversations(context.Context, []Platform) error 
 func (a *boundTestAgent) ConversationState() any { return map[string]string{"mode": "binding"} }
 func (a *boundTestAgent) BindConversation(context.Context, string, string) error {
 	a.bound++
+	return nil
+}
+func (a *boundTestAgent) RetryConversationCreation(_ context.Context, id, thread string) error {
+	if id != "job" {
+		return errors.New("unknown-job")
+	}
+	a.creationRecoveries++
 	return nil
 }
 
@@ -95,6 +103,10 @@ func TestRetainedConversationAndPairingRoutesRequireToken(t *testing.T) {
 		{"GET", "/api/v1/status", "", true, 200},
 		{"GET", "/api/v1/projects/desktop/conversation", "", true, 200},
 		{"POST", "/api/v1/projects/desktop/conversation", `{"session_key":"chat","thread":"T1"}`, true, 200},
+		{"POST", "/api/v1/projects/desktop/conversation", `{"action":"recover_creation","id":"job"}`, false, 401},
+		{"POST", "/api/v1/projects/desktop/conversation", `{"action":"recover_creation","id":"job"}`, true, 200},
+		{"POST", "/api/v1/projects/desktop/conversation", `{"action":"recover_creation","id":"wrong"}`, true, 400},
+		{"POST", "/api/v1/projects/desktop/conversation", `{"action":"create"}`, true, 400},
 		{"POST", "/api/v1/projects/desktop/conversation/feishu", `{"action":"start"}`, true, 200},
 		{"POST", "/api/v1/projects/desktop/conversation/feishu", `{"action":"other"}`, true, 400},
 	} {
@@ -108,7 +120,7 @@ func TestRetainedConversationAndPairingRoutesRequireToken(t *testing.T) {
 			t.Fatalf("%s: %d %s", tc.path, w.Code, w.Body.String())
 		}
 	}
-	if a.bound != 1 || setup.actions != 1 {
+	if a.bound != 1 || setup.actions != 1 || a.creationRecoveries != 1 {
 		t.Fatal("retained routes did not execute")
 	}
 	m.Stop()
