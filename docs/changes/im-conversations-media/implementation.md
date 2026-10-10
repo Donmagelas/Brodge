@@ -12,6 +12,7 @@
 - 模拟验证覆盖未加载绑定会话恢复、原请求只提交一次、丢失开始回执后不重跑、打开失败限频、协议不兼容时不触发导航。已在本机通过真实会话链接打开并读取授权会话；随后完成真实 Desktop 与其 App Server 退出、重新启动后的飞书往返验收，结果见下条。
 - 重启验收：短暂停住 Brodge 后，从已授权机器人私聊发送一条历史暗号检查；独立进程确认旧 Desktop 与 App Server 均退出，新 Desktop PID 改变，再恢复原 Brodge 进程。原绑定 revision 保持，入站只生成一个已完成回合，Desktop 与飞书均回复“青松48”；飞书官方 API 核对原创建者输入、原聊天／原消息回复和 OK 表情。Brodge 本机配置、配对、管理 token 及 Codex 配置／模型目录文件校验值保持。首个启动期只读探测返回 response-owner-mismatch，随后真实请求正常完成；本轮没有单独记录深链接回退是否触发，因此真实重启恢复已验收，不能进一步声称强制未加载分支已独立实测。临时验收脚本曾把结果类型 result 误写为 reply；修正核验后使用同一回合取证，没有重新发送模型请求。
 - 再次核实 Desktop 的 newThread 深链接处理：它导航到新聊天首页并预填输入框，没有创建返回值或会话 ID，不能用于 `/new` 的完整创建和绑定。官方 App Server 文档有 thread/start 和 thread/resume；但本机 Desktop 的 App Server 使用内部 stdio 连接，未暴露 Brodge 可直接连接的监听入口。底层有创建 API 与 Brodge 已接通当前 Desktop 的完整创建流程是两回事；该项继续未完成，不改用独立 app-server。
+- `create_thread` 独立接入验证（Desktop 26.928.21956，build 12404，macOS）：定位到内置 codex-app-tools 0.1.5 的 MCP 转发器。它经 `CODEX_APP_TOOLS_PIPE_PATH` 连接独立原生管道，调用还要求执行器的 thread／turn 元数据；该管道在分发请求前检查调用进程。临时 Go 探针以 PPID=1、无执行器元数据的独立进程运行，只发送 `tools/list`，连接后读到 EOF；同一时刻 Desktop 日志明确记录 `dynamic_app_tools_peer_rejected reason=untrusted-process-ancestry`。因此当前入口不接受这类独立 Brodge 调用方，测试在工具列表阶段失败，未执行创建、绑定或飞书发送。未借用当前会话工具身份、调整进程来源或修改 Desktop 校验。现有绑定和受保护配置校验值保持；本轮未改产品代码。此结果将该路线从“入口待定位”收敛为“入口已定位、当前独立调用方被拒绝”，不能据此断言所有未来版本或其他平台均不可接入。
 - 本次恢复改动完成后，重新运行全仓测试、race、vet、Web 构建、二进制／应用打包及签名核验，均通过。源码、图标、测试、方案和打包脚本同步至用户指定公开仓库；私有配置、运行数据库、凭据及本机应用包保持忽略。
 
 ## 执行记录（2026-10-10 本机）
@@ -20,7 +21,7 @@
 | --- | --- |
 | S0 | 已核实当前安装包与实际会话：stream v11、start v2、submit-user-input v1、steer v1；图片为 localImage，文件为真实快照路径及 context attachments；助手 final_answer 真实存在。完整无项目创建入口仍缺失。 |
 | S1 | 创建者约束、真实 @、入口内 binding_threads、旧绑定迁移、/bind /list /switch /current 已实现并通过 SQLite／Unix socket／SDK 回归。真实沿用原私聊；尚无两个获准测试群，群组合仅模拟验收。未来 IM 尚未接入，现有单飞书来源键保留。 |
-| S2 | 技术阻塞，未完成。当前 follower 方法没有完整的 projectless 创建入口；内部 thread/start 不等于 Desktop 完整创建。未使用本次工具 create_thread 冒充产品实现，也未修改 Desktop 安装或另起 app-server。 |
+| S2 | 技术阻塞，未完成。当前 follower 方法没有完整的 projectless 创建入口；内部 thread/start 不等于 Desktop 完整创建。已定位内置 create_thread 管道并以独立 Go 进程实测，其只读 tools/list 被 Desktop 以 untrusted-process-ancestry 拒绝。未使用本次会话工具身份冒充产品实现，也未修改 Desktop 安装或另起 app-server。 |
 | S3 | 已实现并真实验证：原消息机器人 OK 表情、处理期间无普通进度文字、完成后只发 final。原暗号上下文保留。排除 commentary、无 phase、异步题目；失败／中断保持错误状态。 |
 | S4 | 图片、文件、post 图文的官方资源下载与 Desktop 输入已实现。真实图文得到“左边红色正方形、右边蓝色圆形”；纯文本附件得到“海燕73，19+23+31=73”。图片 1732 字节、附件 72 字节。群媒体、PDF／Office 文件解析尚未真实验收。 |
 | S5 | 已实现有序分段、Unicode／JSON 编码限额、跨卡代码围栏、基础 Markdown 卡片；复杂／超长内容额外发送逐字保留的完整 Markdown 文件。Desktop 标记转换为可读内容；表格／公式保持源文及文件回退，未实现静态公式渲染。模拟覆盖编码、长代码、原文保留；真实 85 行代码按两张卡片连续高亮显示，随后原生 Markdown 文件回传，下载字节与快照及全文一致。当前卡片的标题／表格／公式可能保留 Markdown 源文，全文附件可查看格式；手机端尚未验收。 |
