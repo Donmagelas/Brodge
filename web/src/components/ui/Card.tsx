@@ -23,27 +23,3 @@ export function Card({ children, className, hover }: CardProps) {
     </div>
   );
 }
-
-interface StatCardProps {
-  label: string;
-  value: string | number;
-  accent?: boolean;
-}
-
-export function StatCard({ label, value, accent }: StatCardProps) {
-  return (
-    <Card hover>
-      <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-        {label}
-      </p>
-      <p
-        className={cn(
-          'text-2xl font-bold mt-1',
-          accent ? 'text-accent' : 'text-gray-900 dark:text-white'
-        )}
-      >
-        {value}
-      </p>
-    </Card>
-  );
-}

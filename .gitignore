@@ -72,7 +72,8 @@ web/tsconfig.tsbuildinfo
 # Testing & temporary files
 # ============================================================================
 test/
-scripts/
+scripts/*
+!scripts/package-macos.sh
 tmp/
 temp/
 *.tmp
@@ -160,3 +161,10 @@ credentials/
 
 .codex
 cc-connect-new
+.state/
+*.sqlite*
+config.desktop.local.toml
+
+/Brodge
+/build/
+*.instance

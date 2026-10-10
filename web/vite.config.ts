@@ -10,18 +10,14 @@ export default defineConfig({
     },
   },
   server: {
-    port: 9821,
+    port: 18790,
     proxy: {
       '/api': {
-        target: 'http://localhost:9820',
+        target: 'http://127.0.0.1:18789',
         changeOrigin: true,
         timeout: 45000,
       },
-      '/bridge': {
-        target: 'http://localhost:9810',
-        changeOrigin: true,
-        ws: true,
-      },
+
     },
   },
 })
