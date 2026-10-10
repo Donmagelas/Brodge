@@ -74,6 +74,7 @@ web/tsconfig.tsbuildinfo
 test/
 scripts/*
 !scripts/package-macos.sh
+!scripts/sign-macos.sh
 tmp/
 temp/
 *.tmp

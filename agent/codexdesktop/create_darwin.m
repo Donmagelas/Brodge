@@ -15,6 +15,9 @@ typedef struct {
     bool submitted;
 } BrodgeDraft;
 
+// Health checks never request permission or inspect another application's UI.
+int brodgeAccessibilityGranted(void) { return AXIsProcessTrusted() ? 1 : 0; }
+
 // Each cgo call gets a bounded AX traversal, including nested menu searches.
 // A hung Desktop cannot hold the worker indefinitely during prepare or send.
 static __thread NSTimeInterval deadline;

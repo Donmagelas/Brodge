@@ -9,12 +9,19 @@ Codex 的登录、API／网关、模型、技能和权限继续由 Desktop 管�
 ```sh
 make build
 ./Brodge --config config.toml
+./scripts/sign-macos.sh --setup # 本机开发签名身份，只初始化一次
 make app
 ```
 
 `build/Brodge.app` 可双击，后台与 Web 一起启动并打开普通浏览器。直接关闭网页不会停止后台；Web 的“关闭 Brodge”按钮停止后台，浏览器允许时同时关闭标签，否则显示已退出。重复双击会复用后台并重开管理页。没有登录自启动或额外后台服务安装。
 
 本机沿用现有配置打包：`./scripts/package-macos.sh /绝对路径/config.toml`。该包只保存配置文件路径，不把应用凭据打进包内。首次读取文稿目录中的已有配置时，macOS 可能请求文件访问权限。
+
+Mac 打包复用固定签名证书，禁止临时签名回退。`sign-macos.sh --setup` 把专用证书、私钥钥匙串及其解锁材料保存在 `~/Library/Application Support/Brodge/signing`，目录仅当前用户可访问；证书仅在当前用户的代码签名策略下受信任，不修改系统或 TLS 信任。请保留并私下备份整个签名目录，不上传仓库。普通重建不会重新生成证书；缺失、损坏或意外换证会停止打包。应用运行时拒绝覆盖，打包／签名失败保留旧包。
+
+从此前临时签名迁移时，需要重新授权一次辅助功能；Web 显示当前程序实际读到的授权状态。后续版本使用相同证书和应用标识，签名身份保持稳定。对外发行可显式设置 `BRODGE_CODESIGN_IDENTITY` 使用自己的 Apple 签名身份；这份本机开发证书不代替发行签名或公证。
+
+如果迁移后系统开关已开启、Web 仍显示未允许，先退出 Brodge 和系统设置，再执行 `tccutil reset Accessibility local.brodge.desktop`，然后在辅助功能中重新添加实际运行的 `Brodge.app`。该命令只清除 Brodge 的旧辅助功能记录；正常更新不需要执行，也不会由打包脚本自动执行。
 
 首次自动创建需要在系统设置中允许 Brodge 的辅助功能权限，当前适配 Desktop 26.928.21956（12404）。明确尚未发送的失败可以在 Web 重试；发送结果不确定时，填写实际创建的会话链接核对后接续，不自动重发首条消息。已有绑定继续使用 IPC。
 

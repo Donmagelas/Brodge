@@ -344,6 +344,7 @@ func (a *Agent) BindPairedConversation(ctx context.Context, p core.Platform, ori
 }
 func (a *Agent) ConversationState() any {
 	out := map[string]any{"allowed_threads": a.allowed, "native_answers_enabled": a.nativeAnswers, "capabilities": map[string]bool{"existing_binding": true, "new": false, "attachments": true, "native_answers": a.nativeAnswers}, "bindings": []any{}, "conversations": []any{}, "messages": []any{}, "outbox": []any{}}
+	out["accessibility_granted"] = desktopAccessibilityGranted()
 	query := func(name, sql string, read func(*sql.Rows) (any, error)) {
 		rows, err := a.store.db.Query(sql)
 		if err != nil {

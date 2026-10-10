@@ -9,6 +9,7 @@ package codexdesktop
 uintptr_t brodgePrepareDraft(const char *, const char *, char **);
 char *brodgeSubmitDraft(uintptr_t, char **);
 void brodgeCloseDraft(uintptr_t);
+int brodgeAccessibilityGranted(void);
 */
 import "C"
 
@@ -24,6 +25,8 @@ import (
 )
 
 type nativeDraft struct{ handle C.uintptr_t }
+
+func desktopAccessibilityGranted() bool { return C.brodgeAccessibilityGranted() != 0 }
 
 func prepareDesktopDraft(ctx context.Context, text string, media []core.ConversationMedia) (desktopDraft, error) {
 	if err := ctx.Err(); err != nil {
