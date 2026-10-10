@@ -631,7 +631,7 @@ func TestCUJ_CreationLostLinkAutoRecoversFromPersistentIndex(t *testing.T) {
 }
 
 func TestCUJ_CreationDiscoveryRequiresUniqueNewFirstTurn(t *testing.T) {
-	for _, scenario := range []string{"unrelated-new-thread", "two-matching-threads", "no-evidence", "unavailable-candidate", "missing-baseline", "null-baseline"} {
+	for _, scenario := range []string{"unrelated-new-thread", "two-matching-threads", "no-evidence", "unavailable-candidate", "missing-baseline", "null-baseline", "stale-copied-link", "stale-persisted-link"} {
 		t.Run(scenario, func(t *testing.T) {
 			f, socket := newFake(t)
 			a := testAgent(t, socket)
@@ -658,6 +658,9 @@ func TestCUJ_CreationDiscoveryRequiresUniqueNewFirstTurn(t *testing.T) {
 						ids = append(ids, "T3", "T4")
 					}
 					f.mu.Unlock()
+					if scenario == "stale-copied-link" {
+						return "codex://threads/T1", nil
+					}
 					return "", fmt.Errorf("lost-link")
 				}}, nil
 			}
@@ -665,6 +668,11 @@ func TestCUJ_CreationDiscoveryRequiresUniqueNewFirstTurn(t *testing.T) {
 				t.Fatal(err)
 			}
 			step(t, a)
+			if scenario == "stale-persisted-link" {
+				if _, err := a.store.db.Exec(`UPDATE jobs SET thread='T1',state='create_verifying'`); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if scenario == "missing-baseline" || scenario == "null-baseline" {
 				raw := ""
 				if scenario == "null-baseline" {
@@ -677,7 +685,7 @@ func TestCUJ_CreationDiscoveryRequiresUniqueNewFirstTurn(t *testing.T) {
 			step(t, a)
 			step(t, a)
 			want := 0
-			if scenario == "unrelated-new-thread" {
+			if scenario == "unrelated-new-thread" || scenario == "stale-copied-link" || scenario == "stale-persisted-link" {
 				want = 1
 			}
 			if count(t, a.store, `SELECT count(*) FROM bindings WHERE thread='T3'`) != want || count(t, a.store, `SELECT count(*) FROM bindings WHERE thread!='T3'`) != 0 || sends != 1 || f.starts != 0 {

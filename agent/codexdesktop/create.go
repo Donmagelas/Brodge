@@ -61,17 +61,9 @@ func readDesktopThreadIndex(ctx context.Context, path string) ([]string, error) 
 	return ids, rows.Err()
 }
 
-func (a *Agent) discoverCreation(ctx context.Context, j job) (string, error) {
+func (a *Agent) discoverCreation(ctx context.Context, j job, before []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	var raw string
-	if err := a.store.db.QueryRow(`SELECT creation_seen FROM jobs WHERE id=?`, j.ID).Scan(&raw); err != nil {
-		return "", err
-	}
-	var before []string
-	if raw == "" || json.Unmarshal([]byte(raw), &before) != nil || before == nil {
-		return "", fmt.Errorf("creation-baseline-unavailable")
-	}
 	ids, err := a.creationIndex(ctx)
 	if err != nil {
 		return "", err
@@ -304,8 +296,24 @@ func (a *Agent) advanceOneCreation(ctx context.Context, j job) error {
 			return err
 		}
 	}
+	var raw string
+	if err := a.store.db.QueryRow(`SELECT creation_seen FROM jobs WHERE id=?`, j.ID).Scan(&raw); err != nil {
+		return err
+	}
+	var before []string
+	if raw == "" || json.Unmarshal([]byte(raw), &before) != nil || before == nil {
+		return a.creationError(j, "create_uncertain", fmt.Errorf("creation-baseline-unavailable"))
+	}
+	// Background submission can return focus to a previous chat before Copy
+	// Link runs. Never attach that old chat as the newly created conversation.
+	for _, id := range before {
+		if j.Thread == id {
+			j.Thread = ""
+			break
+		}
+	}
 	if j.Thread == "" || j.State == "create_uncertain" {
-		j.Thread, err = a.discoverCreation(ctx, j)
+		j.Thread, err = a.discoverCreation(ctx, j, before)
 		if err != nil {
 			return a.creationError(j, "create_uncertain", err)
 		}
