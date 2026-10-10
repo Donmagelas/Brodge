@@ -102,11 +102,17 @@ func idle(state wire, thread string) (bool, error) {
 			}
 		}
 	}
-	if r := obj(state["threadRuntimeStatus"]); r != nil && str(r["type"]) != "idle" {
-		return false, nil
-	}
+	failedTurn := false
 	for _, t := range turns {
 		if str(t["status"]) == "inProgress" {
+			return false, nil
+		}
+		failedTurn = failedTurn || str(t["status"]) == "failed" || str(t["status"]) == "interrupted"
+	}
+	if r := obj(state["threadRuntimeStatus"]); r != nil && str(r["type"]) != "idle" {
+		// Desktop keeps systemError after a terminal failure. It does not
+		// imply active work; the guards above still reject pending activity.
+		if str(r["type"]) != "systemError" || !failedTurn {
 			return false, nil
 		}
 	}

@@ -25,7 +25,7 @@
 | S0 | 已核实 Desktop 26.928.21956（12404）的 stream v11、start v2、原生问答、图片和文件输入及 final_answer。独立创建管道不可调用；产品已使用 Desktop 界面首轮创建并自动确认 ID。 |
 | S1 | 已实现并真实验证：仅创建者、任意群真实 @、私聊与两个群各自绑定；/bind /list /switch /current 完成飞书测试。私聊换绑旧会话返回“青松48”，切回返回“新松61”；群 /list 不含私聊会话，群 /switch 私聊独有会话被拒绝且绑定保留。Web 的认证管理 API 换绑、读回、还原已通过；本轮未重复浏览器点击验收。 |
 | S2 | 文字首条自动创建无项目会话、取得确切 ID、原消息绑定与最终回传已真实通过；群两轮追问保留“群松74→群松75”，无 @ 不触发。首次图片实际包含 localImage，唯一新会话首轮正确识别并回原图。首次 PDF 初次 AX 发现 8 个文本框，未发送；用户重试后成功新建并输入 PDF、自动绑定。模型随后返回 401，未取得读数和回传结果。/new 暂缓。 |
-| S3 | 已实现并真实验证表情确认、处理期间安静、完成后只发 final。模型 failed/interrupted、开始 ACK 丢失、投递结果未知和上传失败有故障注入回归；真实 Brodge 在运行中正常重启和 SIGKILL 后重开均跟随同一原回合完成，job／client message／turn 不变。强制结束正在执行的 Desktop 或上游真实断流不由上述证据替代。 |
+| S3 | 已实现并真实验证表情确认、处理期间安静、完成后只发 final。模型 failed/interrupted、开始 ACK 丢失、投递结果未知和上传失败有故障注入回归；真实 Brodge 在运行中正常重启和 SIGKILL 后重开均跟随同一原回合完成，job／client message／turn 不变。本轮 PDF 补测发现并修复 systemError 导致失败后新追问一直排队的问题，真实新请求已提交原会话。强制结束正在执行的 Desktop 或上游真实断流不由上述证据替代。 |
 | S4 | 私聊图片、TXT 已通过。群图文已修复实际事件中的 @ 占位符并实测识别图片；“引用文件 + @”在持久入站后核对同聊天／同创建者或当前机器人，再下载原附件。群 PDF 的原文件已进入 Desktop 并读出 PDF953 / 41；群 Word／Excel 分别读出 DOCX164 / 53 和 XLSX275 / 67，实际输入包含本条附件路径；图片首次新建通过，PDF 首次新建与输入通过，但模型 401 阻断读取及回传，见 S2。 |
 | S5 | 已实现有序分段、Unicode／JSON 编码限额、跨卡代码围栏、基础 Markdown 卡片；复杂／超长内容额外发送逐字保留的完整 Markdown 文件。Desktop 标记转换为可读内容；表格／公式保持源文及文件回退，未实现静态公式渲染。模拟覆盖编码、长代码、原文保留；真实 85 行代码按两张卡片连续高亮显示，随后原生 Markdown 文件回传，下载字节与快照及全文一致。当前卡片的标题／表格／公式可能保留 Markdown 源文，全文附件可查看格式；手机端尚未验收。 |
 | S6 | 图片和文件经官方 upload/reply 原生回传，固定 UUID、上传 key、0400 快照和 SHA 持久保存。群图像、PDF、Word、Excel 以及首条图片回传的官方资源下载均与快照 SHA 一致。新增每小时清理超过 24 小时且 inbox/jobs/outbox 均未引用的孤立文件；历史与待执行／待投递附件保留。SQLite 回归覆盖失败后重试、历史复用、损坏引用及符号链接边界。 |
@@ -247,3 +247,12 @@
 - 缓存：现有 worker 每小时清理超过 24 小时、全部持久记录均未引用的孤立文件。历史、待提交、上传失败后待重试及待投递引用均保留；损坏 JSON 引用停止删除；不跟随符号链接或递归清理目录。真实 SQLite 回归覆盖上述行为，未批量删除用户会话或历史附件。
 - 本轮本地检查通过：`go test ./...`、`go test -race ./...`、`go vet ./...`、`npm run build --prefix web`、Go 二进制构建和 diff 检查。固定身份打包、严格签名验证通过；换版后运行进程自检辅助功能仍为 true。此次安装前后 Brodge 配置、管理 token、飞书配置、Codex 配置和模型目录的五项 SHA 均不变。更早备份中的 Codex config.toml 校验值与本轮开始前已不一致，未回退用户的同时修改。
 - 私有证据保存在忽略的 `.state/acceptance/`：official-readback、first-media-jobs、web-binding、crash-before／after、restart-before／after 和 install-integrity。配置、凭据、运行数据库、生成 fixture 和本机安装包不上传仓库。
+
+
+### 2026-10-10 PDF 补测与失败后追问修复
+
+- 缓存清理已经实现；本轮重新运行 `TestCUJ_MediaCleanupRetainsHistoryAndPendingDelivery` 与 `TestMediaCleanupFailsClosedAndStaysInsideCache`，通过。只清理无任何持久引用、超过 24 小时的孤立文件，历史附件继续保留。
+- 用户要求补测后，在已绑定的“Brodge 文件新建测试”群引用原 PDF 并真实 @，发送新请求 N1010R。请求和附件持久入站后却一直显示 `queued / desktop-busy`。只读实际 Desktop IPC 快照确认：唯一旧轮已 failed、resumeState=resumed、没有请求／goal／待确认提交，但 threadRuntimeStatus 仍为 systemError。旧逻辑把该终态错误当成活跃任务，导致明确的新追问无法继续。
+- 修复仅允许有 failed／interrupted 终轮证据且没有任何活跃回合或待处理状态时，将 systemError 视为可接受新消息。未知运行状态、未加载、等待问题、活跃 goal、未确认提交、插件变更及缺少终轮证据仍阻止提交。扩展既有 SQLite＋模拟 Unix socket TestCUJ：旧代码在显式追问处失败，修复后通过；额外回归确认 systemError 不会覆盖待处理工作。没有自动重跑旧失败回合。
+- 固定签名换版后，原队列 job `a68acc48-d6b6-4bc5-8ef7-9537f4a27fa7` 和 client message 保持，进入原自动创建会话 `01a1257a-34f0-7512-9cff-7a6986026132` 的新 turn `01a1258a-dc6c-7e93-a845-2e33ff09e556`。Desktop 真实输入包含原 PDF 缓存路径；模型再次返回 401 Unauthorized（订阅凭据或 API 地址无效），未读取文件，未回传附件。此补测仍不通过完整读写验收；仅确认失败后的新追问已可提交，不改写首次失败记录。
+- `go test ./...`、`go test -race ./...`、`go vet ./...`、Web／Go 构建、diff 与应用严格签名检查通过。新包已启动，辅助功能仍为 true，安装前后五项既有配置校验值一致；未修改 Desktop 或网关配置。私有证据见忽略的 `.state/acceptance/pdf-retest-before.json`、`pdf-retest-after.json` 与 `pdf-retest-install-integrity.json`。

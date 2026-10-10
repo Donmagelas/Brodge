@@ -1016,6 +1016,9 @@ func TestCUJ_TerminalFailureAndDeliveryRetryNeverRepeatModel(t *testing.T) {
 			turn := obj(list(f.states["T1"]["turns"])[0])
 			turn["status"] = status
 			turn["items"] = []any{wire{"type": "agentMessage", "phase": "final_answer", "text": "PARTIAL_NOT_SUCCESS"}}
+			// Desktop retains systemError after a failed model request even
+			// though the turn is terminal and can accept an explicit follow-up.
+			f.states["T1"]["threadRuntimeStatus"] = wire{"type": "systemError"}
 			f.mu.Unlock()
 			p.failure = fmt.Errorf("lost delivery response")
 			step(t, a)
@@ -1049,6 +1052,30 @@ func TestCUJ_TerminalFailureAndDeliveryRetryNeverRepeatModel(t *testing.T) {
 		})
 	}
 }
+
+func TestSystemErrorDoesNotOverridePendingDesktopWork(t *testing.T) {
+	for name, change := range map[string]func(wire){
+		"running turn":          func(s wire) { obj(list(s["turns"])[0])["status"] = "inProgress" },
+		"pending question":      func(s wire) { s["requests"] = []any{wire{"id": "question"}} },
+		"active goal":           func(s wire) { s["threadGoal"] = wire{"status": "active"} },
+		"unknown submission":    func(s wire) { s["unconfirmedTurnSubmissions"] = []any{"pending"} },
+		"plugin transition":     func(s wire) { s["pendingDisabledPluginIds"] = []any{"plugin"} },
+		"not resumed":           func(s wire) { s["resumeState"] = "resuming" },
+		"no terminal evidence":  func(s wire) { s["turns"] = []any{} },
+		"unknown runtime state": func(s wire) { s["threadRuntimeStatus"] = wire{"type": "future-state"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := uiTurn("T1", "failed input")
+			obj(list(s["turns"])[0])["status"] = "failed"
+			s["threadRuntimeStatus"] = wire{"type": "systemError"}
+			change(s)
+			if ready, err := idle(s, "T1"); err != nil || ready {
+				t.Fatal("systemError bypassed pending work or missing evidence", ready, err)
+			}
+		})
+	}
+}
+
 func TestNewAndFailedSwitchPreserveBinding(t *testing.T) {
 	_, socket := newFake(t)
 	a := testAgent(t, socket)
