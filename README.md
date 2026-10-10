@@ -25,6 +25,10 @@ Mac 打包复用固定签名证书，禁止临时签名回退。`sign-macos.sh -
 
 首次自动创建需要在系统设置中允许 Brodge 的辅助功能权限，当前适配 Desktop 26.928.21956（12404）。明确尚未发送的失败可以在 Web 重试；会话 ID 由 Brodge 自动取得，即使复制链接失败，也会从创建前保存的会话索引中找出新会话并核对首轮内容，无需填写链接。无法唯一确认时保留待确认状态，不自动重发首条消息。已有绑定继续使用 IPC。
 
+群图文可在同一条消息内 @ 并放入图片；独立图片／文件先发送，再引用该消息并 @ 机器人。引用资源只读取同一聊天中创建者或当前机器人发出的附件。群图片、PDF、Word 与 Excel 收发已实测。首条图片自动新建通过；首条 PDF 经重试完成新建和输入，但该新会话的模型请求返回 401，读取与回传未通过，详见实施记录。
+
+附件缓存由现有 worker 每小时检查，只删除超过 24 小时且没有任何持久记录引用的孤立文件；已完成会话引用的附件也保留，供后续追问使用。
+
 不带参数时，Brodge 自己的配置和状态放在 `~/Library/Application Support/Brodge`。新安装可以在 Web 扫码、私聊配对并启用机器人；已有配置用 `--config` 显式沿用。`--no-browser` 可只启动后台。Web 默认地址 `http://127.0.0.1:18789`，自动启动使用一次性登录码，管理 API 仍需认证。
 
 当前仅 macOS，源码见 https://github.com/Donmagelas/Brodge 。源码构建需要 Go 1.25、Node.js 和 Xcode Command Line Tools（用于应用打开／重开的原生事件支持）。配置示例见 [config.example.toml](config.example.toml)。实施状态、测试证据和真实联调缺口见 [implementation.md](docs/changes/im-conversations-media/implementation.md)。

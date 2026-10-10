@@ -999,6 +999,56 @@ func TestCompletedWithErrorDoesNotReportSuccess(t *testing.T) {
 		t.Fatal(category, body)
 	}
 }
+
+func TestCUJ_TerminalFailureAndDeliveryRetryNeverRepeatModel(t *testing.T) {
+	for _, status := range []string{"failed", "interrupted"} {
+		t.Run(status, func(t *testing.T) {
+			f, socket := newFake(t)
+			a := testAgent(t, socket)
+			p := &fakePlatform{}
+			m := incoming("A", "DM", "failure", "run once")
+			if err := a.store.bind(originKey(*m.ConversationOrigin), "T1"); err != nil {
+				t.Fatal(err)
+			}
+			accept(t, a, p, m)
+			step(t, a)
+			f.mu.Lock()
+			turn := obj(list(f.states["T1"]["turns"])[0])
+			turn["status"] = status
+			turn["items"] = []any{wire{"type": "agentMessage", "phase": "final_answer", "text": "PARTIAL_NOT_SUCCESS"}}
+			f.mu.Unlock()
+			p.failure = fmt.Errorf("lost delivery response")
+			step(t, a)
+			if err := a.store.recover(); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.HandleConversation(context.Background(), p, m); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.store.db.Exec(`UPDATE outbox SET next_attempt=0`); err != nil {
+				t.Fatal(err)
+			}
+			p.failure = nil
+			step(t, a)
+			if count(t, a.store, `SELECT count(*) FROM jobs WHERE state='finished' AND error!=''`) != 1 || len(p.sent) != 2 || p.sent[0].uuid != p.sent[1].uuid || p.sent[0].text != p.sent[1].text || !strings.Contains(p.sent[1].text, "返回错误") || count(t, a.store, `SELECT count(*) FROM outbox WHERE kind LIKE 'media:%'`) != 0 {
+				t.Fatal("failure or stable retry identity lost")
+			}
+			f.mu.Lock()
+			starts := f.starts
+			f.mu.Unlock()
+			if starts != 1 {
+				t.Fatal("model automatically rerun after failure")
+			}
+			accept(t, a, p, incoming("A", "DM", "continue", "continue explicitly"))
+			step(t, a)
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if f.starts != 2 || count(t, a.store, `SELECT count(*) FROM jobs WHERE thread='T1'`) != 2 {
+				t.Fatal("explicit continuation did not stay in the same chat")
+			}
+		})
+	}
+}
 func TestNewAndFailedSwitchPreserveBinding(t *testing.T) {
 	_, socket := newFake(t)
 	a := testAgent(t, socket)
@@ -1575,6 +1625,16 @@ func TestCUJ_EntryListsAndSwitchCannotImportAnotherEntry(t *testing.T) {
 	if thread != "T1" {
 		t.Fatal("cross-entry switch imported a thread")
 	}
+	if err := a.store.db.QueryRow(`SELECT body FROM outbox WHERE job='ingress:app:tenant:foreign-switch'`).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "/list") || !strings.Contains(body, "/bind") || strings.Contains(body, "allowed_threads") {
+		t.Fatal("switch rejection did not explain entry association", body)
+	}
+	accept(t, a, p, incoming("A", "DM", "malformed-bind", "/bind codex//threads/T2"))
+	if err := a.store.db.QueryRow(`SELECT body FROM outbox WHERE job='ingress:app:tenant:malformed-bind'`).Scan(&body); err != nil || body != a.i18n.T(core.MsgDesktopBindUsage) {
+		t.Fatal("invalid link did not explain correct syntax", body, err)
+	}
 	if err := a.store.db.QueryRow(`SELECT body FROM outbox WHERE job='ingress:app:tenant:dm-list'`).Scan(&body); err != nil {
 		t.Fatal(err)
 	}
@@ -1655,6 +1715,12 @@ type mediaPlatform struct {
 	media              []core.ConversationMedia
 	failDownload       bool
 	failUpload         bool
+	resolved           []core.ConversationMedia
+	resolveErr         error
+}
+
+func (p *mediaPlatform) ResolveConversationMedia(context.Context, core.ConversationOrigin) ([]core.ConversationMedia, error) {
+	return append([]core.ConversationMedia(nil), p.resolved...), p.resolveErr
 }
 
 func (p *mediaPlatform) DownloadConversationMedia(_ context.Context, o core.ConversationOrigin, m core.ConversationMedia) ([]byte, error) {
@@ -1775,6 +1841,212 @@ func TestCUJ_MediaDownloadFailureNeverRunsPartialText(t *testing.T) {
 	defer f.mu.Unlock()
 	if f.starts != 0 || count(t, a.store, `SELECT count(*) FROM jobs`) != 0 {
 		t.Fatal("partial message executed")
+	}
+}
+
+func TestUnsupportedAttachmentExplainsMediaWithoutStartingTurn(t *testing.T) {
+	_, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	accept(t, a, p, incoming("A", "group", "unsupported", "/unsupported-attachment"))
+	step(t, a)
+	if count(t, a.store, `SELECT count(*) FROM jobs`) != 0 || len(p.sent) != 1 || !strings.Contains(p.sent[0].text, "附件格式") || strings.Contains(p.sent[0].text, "权限") {
+		t.Fatal("misleading attachment failure or partial execution")
+	}
+}
+
+func TestCUJ_QuotedGroupFilePersistsBeforeResolutionAndSurvivesRedelivery(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &mediaPlatform{data: []byte("quoted PDF bytes"), resolved: []core.ConversationMedia{{Kind: "file", Key: "resource", Name: "report.pdf", MessageID: "parent"}}}
+	m := incoming("A", "group", "quote", "read my quoted file")
+	m.ConversationOrigin.ChatType, m.ConversationOrigin.ParentID = "group", "parent"
+	if err := a.store.bind(originKey(*m.ConversationOrigin), "T1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.HandleConversation(context.Background(), p, m); err != nil {
+		t.Fatal(err)
+	}
+	if p.downloads != 0 || count(t, a.store, `SELECT count(*) FROM inbox WHERE state='ready' AND media='[]'`) != 1 {
+		t.Fatal("network preceded durable ingress")
+	}
+	if err := a.consumeInbox(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	p.resolveErr = fmt.Errorf("parent now unavailable")
+	if err := a.HandleConversation(context.Background(), p, m); err != nil {
+		t.Fatal("resolved parent broke duplicate delivery", err)
+	}
+	if err := a.store.recover(); err != nil {
+		t.Fatal(err)
+	}
+	j, err := scanJob(a.store.db.QueryRow(`SELECT ` + jobCols + ` FROM jobs`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attachments, err := a.turnInput(j)
+	if err != nil || len(attachments) != 1 {
+		t.Fatal("quoted file not in actual turn", err)
+	}
+	step(t, a)
+	f.finish("T1", "PDF_READ_OK", false)
+	for i := 0; i < 3; i++ {
+		step(t, a)
+	}
+	if p.downloads != 1 || count(t, a.store, `SELECT count(*) FROM jobs`) != 1 {
+		t.Fatal("duplicate repeated download or execution")
+	}
+	if len(p.sent) != 1 || p.sent[0].o.MessageID != "quote" || p.sent[0].o.ChatID != "group" {
+		t.Fatal("reply used attachment parent instead of original request")
+	}
+	// A new unresolved reference fails explicitly, never running only its text.
+	n := incoming("A", "group", "quote-failed", "read unavailable attachment")
+	n.ConversationOrigin.ChatType, n.ConversationOrigin.ParentID = "group", "parent"
+	if err = a.HandleConversation(context.Background(), p, n); err != nil {
+		t.Fatal(err)
+	}
+	step(t, a)
+	if count(t, a.store, `SELECT count(*) FROM jobs`) != 1 || count(t, a.store, `SELECT count(*) FROM outbox WHERE kind='media-error'`) != 1 {
+		t.Fatal("unresolved quoted attachment silently ran")
+	}
+}
+
+func TestCUJ_MediaCleanupRetainsHistoryAndPendingDelivery(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &mediaPlatform{data: []byte("persistent attachment"), failUpload: true}
+	m := incoming("A", "DM", "cleanup-media", "read attachment")
+	m.Media = []core.ConversationMedia{{Kind: "file", Key: "file", Name: "input.txt"}}
+	if err := a.store.bind(originKey(*m.ConversationOrigin), "T1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.HandleConversation(context.Background(), p, m); err != nil {
+		t.Fatal(err)
+	}
+	step(t, a)
+	j, err := scanJob(a.store.db.QueryRow(`SELECT ` + jobCols + ` FROM jobs`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attachments, err := a.turnInput(j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := str(obj(attachments[0])["fsPath"])
+	output, _, err := a.snapshotMedia(p.data, "output.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.finish("T1", "[output](<"+output+">)", false)
+	step(t, a)
+	// Keep an inbox-only reference too, independent of the job and outbox.
+	queued, _, err := a.snapshotMedia(p.data, "queued.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.store.db.Exec(`UPDATE inbox SET media=?`, marshalMedia([]core.ConversationMedia{{Kind: "file", Path: queued}})); err != nil {
+		t.Fatal(err)
+	}
+	orphan, _, err := a.snapshotMedia([]byte("abandoned partial download"), "orphan.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recent, _, err := a.snapshotMedia([]byte("fresh incomplete download"), "recent.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	old := now.Add(-48 * time.Hour)
+	for _, path := range []string{input, output, queued, orphan} {
+		if err = os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = a.store.recover(); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := a.cleanMedia(now)
+	if err != nil || removed != 1 {
+		t.Fatal("cleanup", removed, err)
+	}
+	if _, err = os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatal("old orphan retained", err)
+	}
+	for _, path := range []string{input, output, queued, recent} {
+		if _, err = readMedia(path); err != nil {
+			t.Fatal("referenced or recent media removed", err)
+		}
+	}
+	if _, _, err = a.turnInput(j); err != nil {
+		t.Fatal("history input lost", err)
+	}
+	p.failUpload = false
+	if _, err = a.store.db.Exec(`UPDATE outbox SET next_attempt=0`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		step(t, a)
+	}
+	if len(p.media) != 1 || count(t, a.store, `SELECT count(*) FROM outbox WHERE kind LIKE 'media:%' AND state='sent'`) != 1 {
+		t.Fatal("pending delivery did not recover")
+	}
+	if removed, err = a.cleanMedia(now); removed != 0 || err != nil {
+		t.Fatal("completed history was deleted", removed, err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.starts != 1 {
+		t.Fatal("cleanup/recovery repeated model turn")
+	}
+}
+
+func TestMediaCleanupFailsClosedAndStaysInsideCache(t *testing.T) {
+	_, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	accept(t, a, p, incoming("A", "DM", "bind", "/bind T1"))
+	path, _, err := a.snapshotMedia([]byte("old orphan"), "old.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	old := now.Add(-48 * time.Hour)
+	if err = os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.store.db.Exec(`UPDATE inbox SET media='broken-json'`); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := a.cleanMedia(now); err == nil || removed != 0 {
+		t.Fatal("deleted with unreadable references", removed, err)
+	}
+	if _, err = os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.store.db.Exec(`UPDATE inbox SET media='[]'`); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "outside.txt")
+	if err = os.WriteFile(external, []byte("outside cache"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chtimes(external, old, old); err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(a.dataDir, "media")
+	for link, target := range map[string]string{
+		filepath.Join(cache, strings.Repeat("a", 64)): filepath.Dir(external),
+		filepath.Join(filepath.Dir(path), "link.txt"): external,
+	} {
+		if err = os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if removed, err := a.cleanMedia(now); removed != 1 || err != nil {
+		t.Fatal(removed, err)
+	}
+	if data, err := os.ReadFile(external); err != nil || string(data) != "outside cache" {
+		t.Fatal("touched external data", err)
 	}
 }
 func TestCUJ_NativeOptionNumberMapsToExactAnswer(t *testing.T) {

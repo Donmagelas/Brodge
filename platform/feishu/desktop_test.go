@@ -104,6 +104,37 @@ func TestDesktopIngressPersistenceFailureReachesDispatcher(t *testing.T) {
 	}
 }
 
+func TestGroupPostImageResolvesAuthenticatedMentionPlaceholder(t *testing.T) {
+	p := &Platform{desktopBound: true, desktopTenant: "tenant", appID: "app", platformName: "feishu", allowFrom: "actor", botOpenID: "bot"}
+	var received []*core.Message
+	p.SetConversationHandler(func(_ context.Context, _ core.Platform, m *core.Message) error {
+		received = append(received, m)
+		return nil
+	})
+	e := desktopEvent(t, "group", true)
+	kind := "post"
+	body := `{"title":"","content":[[{"tag":"at","user_id":"@_user_1","style":[]},{"tag":"text","text":" read this image","style":[]}],[{"tag":"img","image_key":"image-key","width":680,"height":360}]]}`
+	e.Event.Message.MessageType, e.Event.Message.Content = &kind, &body
+	if err := p.onDesktopMessage(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if len(received) != 1 || received[0].Content != "read this image" || len(received[0].Media) != 1 || received[0].Media[0].Key != "image-key" {
+		t.Fatal("actual Feishu post shape lost text or image")
+	}
+	// A made-up body placeholder cannot borrow another real mention.
+	body = strings.ReplaceAll(body, "@_user_1", "@_user_2")
+	if err := p.onDesktopMessage(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if len(received) != 2 || received[1].Content != "/unsupported-attachment" || len(received[1].Media) != 0 {
+		t.Fatal("unresolved mention accepted")
+	}
+	e.Event.Message.Mentions = nil
+	if err := p.onDesktopMessage(context.Background(), e); err != nil || len(received) != 2 {
+		t.Fatal("body mention bypassed group identity check", err)
+	}
+}
+
 func TestCreatorCanUseAnyChatWithoutGroupAllowlist(t *testing.T) {
 	// Legacy allow_chat must no longer restrict where the creator can use the bot.
 	platform, err := New(map[string]any{"app_id": "app", "app_secret": "secret", "tenant_key": "tenant", "allow_from": "actor", "allow_chat": "old-private-chat"})
@@ -343,5 +374,62 @@ func TestOfficialSDKResourceReactionMarkdownUploadAndMediaReply(t *testing.T) {
 	}
 	if requests["/open-apis/im/v1/messages/original/reply"] != 3 {
 		t.Fatal(requests)
+	}
+}
+
+func TestOfficialSDKQuotedAttachmentChecksSourceAndDownloadsParent(t *testing.T) {
+	message := map[string]any{"message_id": "parent", "chat_id": "chat", "msg_type": "file", "sender": map[string]any{"id": "actor", "id_type": "open_id", "sender_type": "user", "tenant_key": "tenant"}, "body": map[string]string{"content": `{"file_key":"resource","file_name":"报告.pdf"}`}}
+	resources := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			fmt.Fprint(w, `{"code":0,"tenant_access_token":"local-quote-token","expire":7200}`)
+		case "/open-apis/im/v1/messages/parent":
+			json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []any{message}}})
+		case "/open-apis/im/v1/messages/parent/resources/resource":
+			resources++
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Disposition", `attachment; filename="report.pdf"`)
+			fmt.Fprint(w, "PDF_BYTES")
+		default:
+			t.Errorf("unexpected API %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer server.Close()
+	p := &Platform{desktopBound: true, appID: "quote-test", desktopTenant: "tenant", allowFrom: "actor", botOpenID: "bot", client: lark.NewClient("quote-test", "local-secret", lark.WithOpenBaseUrl(server.URL), lark.WithHttpClient(server.Client()))}
+	o := core.ConversationOrigin{AppID: p.appID, Tenant: "tenant", ChatType: "group", ChatID: "chat", Actor: "actor", MessageID: "request", ParentID: "parent"}
+	media, err := p.ResolveConversationMedia(context.Background(), o)
+	if err != nil || len(media) != 1 || media[0].MessageID != "parent" || media[0].Name != "报告.pdf" {
+		t.Fatal(media, err)
+	}
+	data, err := p.DownloadConversationMedia(context.Background(), o, media[0])
+	if err != nil || string(data) != "PDF_BYTES" || resources != 1 {
+		t.Fatal("wrong attachment bytes or message", err)
+	}
+	media[0].MessageID = "foreign"
+	if _, err = p.DownloadConversationMedia(context.Background(), o, media[0]); err == nil || resources != 1 {
+		t.Fatal("foreign resource parent accepted")
+	}
+	for _, field := range []string{"message_id", "chat_id"} {
+		old := message[field]
+		message[field] = "other"
+		if _, err = p.ResolveConversationMedia(context.Background(), o); err == nil {
+			t.Fatal("foreign parent accepted", field)
+		}
+		message[field] = old
+	}
+	message["sender"].(map[string]any)["id"] = "other-user"
+	if _, err = p.ResolveConversationMedia(context.Background(), o); err == nil {
+		t.Fatal("another group member's attachment accepted")
+	}
+	message["sender"] = map[string]any{"id": p.appID, "id_type": "app_id", "sender_type": "app"}
+	if _, err = p.ResolveConversationMedia(context.Background(), o); err != nil {
+		t.Fatal("own bot artifact rejected", err)
+	}
+	message["msg_type"] = "interactive"
+	if media, err = p.ResolveConversationMedia(context.Background(), o); err != nil || len(media) != 0 {
+		t.Fatal("ordinary question reply treated as media", err)
 	}
 }

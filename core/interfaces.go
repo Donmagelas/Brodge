@@ -63,6 +63,7 @@ type ConversationReactor interface {
 
 // Official resource I/O stays in the IM adapter; persistent state stays in the agent.
 type ConversationMediaPlatform interface {
+	ResolveConversationMedia(context.Context, ConversationOrigin) ([]ConversationMedia, error)
 	DownloadConversationMedia(context.Context, ConversationOrigin, ConversationMedia) ([]byte, error)
 	UploadConversationMedia(context.Context, ConversationOrigin, ConversationMedia) (string, error)
 	ReplyConversationMedia(context.Context, ConversationOrigin, string, ConversationMedia) (string, error)

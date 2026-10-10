@@ -8,15 +8,102 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/chenhg5/cc-connect/core"
 )
 
 const maxMedia = 30 << 20
+
+// Called only by the existing worker, between steps. All snapshot creation and
+// reference commits run on that same worker; ingress contains remote keys only.
+// Historical references are retained because later turns may still read them.
+func (a *Agent) cleanMedia(now time.Time) (int, error) {
+	rows, err := a.store.db.Query(`SELECT media,0 FROM inbox UNION ALL SELECT media,0 FROM jobs UNION ALL SELECT body,1 FROM outbox WHERE kind LIKE 'media:%'`)
+	if err != nil {
+		return 0, err
+	}
+	refs := map[string]bool{}
+	for rows.Next() {
+		var encoded string
+		var single bool
+		if err = rows.Scan(&encoded, &single); err != nil {
+			break
+		}
+		var media []core.ConversationMedia
+		if single {
+			encoded = "[" + encoded + "]"
+		}
+		if err = json.Unmarshal([]byte(encoded), &media); err != nil {
+			break
+		}
+		for _, m := range media {
+			if m.Path != "" {
+				refs[filepath.Clean(m.Path)] = true
+			}
+		}
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	if err != nil {
+		return 0, fmt.Errorf("media-reference-scan-failed")
+	}
+	cache := filepath.Join(a.dataDir, "media")
+	info, err := os.Lstat(cache)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if !info.IsDir() {
+		return 0, fmt.Errorf("unsafe-media-cache")
+	}
+	root, err := os.OpenRoot(cache)
+	if err != nil {
+		return 0, err
+	}
+	defer root.Close()
+	dirs, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, dir := range dirs {
+		hash, e := hex.DecodeString(dir.Name())
+		if !dir.IsDir() || e != nil || len(hash) != sha256.Size {
+			continue
+		}
+		files, e := fs.ReadDir(root.FS(), dir.Name())
+		if e != nil {
+			return removed, e
+		}
+		for _, file := range files {
+			rel := filepath.Join(dir.Name(), file.Name())
+			info, e := root.Lstat(rel)
+			if e != nil {
+				return removed, e
+			}
+			if !info.Mode().IsRegular() || refs[filepath.Join(cache, rel)] || !info.ModTime().Before(now.Add(-24*time.Hour)) {
+				continue
+			}
+			if e = root.Remove(rel); e != nil {
+				return removed, e
+			}
+			removed++
+		}
+		// Remove only an empty hash directory, never recursively.
+		_ = root.Remove(dir.Name())
+	}
+	return removed, nil
+}
 
 func (a *Agent) snapshotMedia(data []byte, name string) (string, string, error) {
 	if len(data) == 0 || len(data) > maxMedia {
@@ -163,11 +250,17 @@ func (a *Agent) turnInput(j job) ([]any, []any, error) {
 
 // Keep output snapshots and exact upload keys in the existing durable outbox.
 func mediaReferences(media []core.ConversationMedia) string {
-	for i := range media {
-		media[i].Path = ""
-		media[i].SHA256 = ""
+	refs := make([]core.ConversationMedia, 0, len(media))
+	for _, m := range media {
+		// Derived parent attachments were absent from the original event. The
+		// immutable source ParentID already participates in event deduplication.
+		if m.MessageID != "" {
+			continue
+		}
+		m.Path, m.SHA256 = "", ""
+		refs = append(refs, m)
 	}
-	return marshalMedia(media)
+	return marshalMedia(refs)
 }
 func sameMediaReferences(a, b string) bool {
 	var x, y []core.ConversationMedia

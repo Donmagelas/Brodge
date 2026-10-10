@@ -179,37 +179,38 @@ func (i *I18n) SetLang(lang Language) {
 type MsgKey string
 
 const (
-	MsgDesktopAllowed        MsgKey = "desktop_allowed"
-	MsgDesktopOffline        MsgKey = "desktop_offline"
-	MsgDesktopBindUsage      MsgKey = "desktop_bindusage"
-	MsgDesktopBound          MsgKey = "desktop_bound"
-	MsgDesktopList           MsgKey = "desktop_list"
-	MsgDesktopUnbound        MsgKey = "desktop_unbound"
-	MsgDesktopCurrent        MsgKey = "desktop_current"
-	MsgDesktopHelp           MsgKey = "desktop_help"
-	MsgDesktopText           MsgKey = "desktop_text"
-	MsgDesktopUnsupported    MsgKey = "desktop_unsupported"
-	MsgDesktopForeign        MsgKey = "desktop_foreign"
-	MsgDesktopMultiple       MsgKey = "desktop_multiple"
-	MsgDesktopNativeDisabled MsgKey = "desktop_nativedisabled"
-	MsgDesktopAnswerPending  MsgKey = "desktop_answerpending"
-	MsgDesktopStale          MsgKey = "desktop_stale"
-	MsgDesktopAnswerAccepted MsgKey = "desktop_answeraccepted"
-	MsgDesktopQuestionEnded  MsgKey = "desktop_questionended"
-	MsgDesktopAccepted       MsgKey = "desktop_accepted"
-	MsgDesktopRunning        MsgKey = "desktop_running"
-	MsgDesktopError          MsgKey = "desktop_error"
-	MsgDesktopEmpty          MsgKey = "desktop_empty"
-	MsgDesktopDesktopInput   MsgKey = "desktop_desktopinput"
+	MsgDesktopAllowed          MsgKey = "desktop_allowed"
+	MsgDesktopOffline          MsgKey = "desktop_offline"
+	MsgDesktopBindUsage        MsgKey = "desktop_bindusage"
+	MsgDesktopBound            MsgKey = "desktop_bound"
+	MsgDesktopList             MsgKey = "desktop_list"
+	MsgDesktopUnbound          MsgKey = "desktop_unbound"
+	MsgDesktopCurrent          MsgKey = "desktop_current"
+	MsgDesktopHelp             MsgKey = "desktop_help"
+	MsgDesktopText             MsgKey = "desktop_text"
+	MsgDesktopUnsupported      MsgKey = "desktop_unsupported"
+	MsgDesktopMediaUnsupported MsgKey = "desktop_media_unsupported"
+	MsgDesktopForeign          MsgKey = "desktop_foreign"
+	MsgDesktopMultiple         MsgKey = "desktop_multiple"
+	MsgDesktopNativeDisabled   MsgKey = "desktop_nativedisabled"
+	MsgDesktopAnswerPending    MsgKey = "desktop_answerpending"
+	MsgDesktopStale            MsgKey = "desktop_stale"
+	MsgDesktopAnswerAccepted   MsgKey = "desktop_answeraccepted"
+	MsgDesktopQuestionEnded    MsgKey = "desktop_questionended"
+	MsgDesktopAccepted         MsgKey = "desktop_accepted"
+	MsgDesktopRunning          MsgKey = "desktop_running"
+	MsgDesktopError            MsgKey = "desktop_error"
+	MsgDesktopEmpty            MsgKey = "desktop_empty"
+	MsgDesktopDesktopInput     MsgKey = "desktop_desktopinput"
 )
 
 var messages = map[MsgKey]map[Language]string{
 	MsgDesktopAllowed: {
-		LangChinese:            "会话不在 allowed_threads 中。",
-		LangEnglish:            "Conversation is outside allowed_threads.",
-		LangTraditionalChinese: "會話不在 allowed_threads 中。",
-		LangJapanese:           "会話は allowed_threads の範囲外です。",
-		LangSpanish:            "La conversación no está en allowed_threads.",
+		LangChinese:            "这个会话尚未关联到当前聊天，原绑定保留。用 /list 查看可切换会话，或用 /bind codex://threads/会话ID 关联已有会话。",
+		LangEnglish:            "This conversation is not linked to this chat; the current binding is retained. Use /list to see linked conversations or /bind codex://threads/ID to link one.",
+		LangTraditionalChinese: "這個會話尚未關聯到目前聊天，保留原綁定。用 /list 查看可切換會話，或用 /bind codex://threads/會話ID 關聯已有會話。",
+		LangJapanese:           "この会話は現在のチャットに関連付けられていません。現在の関連付けを維持します。/list で一覧を確認するか、/bind codex://threads/ID で関連付けてください。",
+		LangSpanish:            "Esta conversación no está vinculada a este chat; se conserva el vínculo actual. Use /list para ver las vinculadas o /bind codex://threads/ID para vincular una.",
 	},
 	MsgDesktopOffline: {
 		LangChinese:            "无法连接该 Desktop 会话，原绑定保留。",
@@ -273,6 +274,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "暫不支援此操作。模型、權限、新會話和取消請在 Desktop 操作；保留目前綁定。",
 		LangJapanese:           "この操作は未対応です。モデル、権限、新規会話、キャンセルは Desktop で操作してください。関連付けを維持します。",
 		LangSpanish:            "Operación no disponible. Gestione modelos, permisos, nuevas conversaciones y cancelación en Desktop; se conserva el vínculo.",
+	},
+	MsgDesktopMediaUnsupported: {
+		LangChinese:            "这条消息的附件格式暂不支持，尚未交给 Codex。请发送图片或文件；群内请在图文消息中 @ 机器人，或引用独立附件并 @ 机器人。",
+		LangEnglish:            "This attachment format is unsupported; nothing was sent to Codex. Send an image or file. In groups, mention the bot in an image post or reply to the attachment and mention the bot.",
+		LangTraditionalChinese: "暫不支援這則訊息的附件格式，尚未交給 Codex。請傳送圖片或檔案；群內請在圖文訊息中 @ 機器人，或引用獨立附件並 @ 機器人。",
+		LangJapanese:           "この添付形式は未対応で、Codex には送信していません。画像またはファイルを送信してください。グループでは画像付き投稿でボットをメンションするか、添付に返信してメンションしてください。",
+		LangSpanish:            "Formato de adjunto no compatible; no se envió nada a Codex. Envíe una imagen o archivo. En grupos, mencione al bot en la publicación con imagen o responda al adjunto y mencione al bot.",
 	},
 	MsgDesktopForeign: {
 		LangChinese:            "这条回复不属于当前聊天。",

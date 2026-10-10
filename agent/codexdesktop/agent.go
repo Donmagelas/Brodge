@@ -214,11 +214,20 @@ func (a *Agent) ResumeConversations(ctx context.Context, platforms []core.Platfo
 		defer a.wg.Done()
 		ticker := time.NewTicker(a.poll)
 		defer ticker.Stop()
+		var nextCleanup time.Time
 		for {
 			select {
 			case <-a.ctx.Done():
 				return
 			case <-ticker.C:
+				if now := time.Now(); !now.Before(nextCleanup) {
+					nextCleanup = now.Add(time.Hour)
+					if removed, err := a.cleanMedia(now); err != nil {
+						slog.Warn("desktop media cleanup skipped", "error", err)
+					} else if removed > 0 {
+						slog.Info("desktop orphan media removed", "count", removed)
+					}
+				}
 				if err := a.step(a.ctx); err != nil {
 					slog.Warn("desktop bridge worker", "error", err)
 				}
@@ -241,7 +250,7 @@ func (a *Agent) HandleConversation(ctx context.Context, p core.Platform, msg *co
 		msg = &msgCopy
 	}
 	for _, m := range msg.Media {
-		if m.Path != "" || m.SHA256 != "" {
+		if m.Path != "" || m.SHA256 != "" || m.MessageID != "" {
 			return fmt.Errorf("remote resource reference required")
 		}
 	}

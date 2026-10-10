@@ -38,6 +38,14 @@ func (a *Agent) consumeInbox(ctx context.Context) error {
 	if err = json.Unmarshal([]byte(mediaJSON), &media); err != nil {
 		return err
 	}
+	if len(media) == 0 && origin.ParentID != "" && !strings.HasPrefix(strings.TrimSpace(body), "/") {
+		if resolver, ok := p.(core.ConversationMediaPlatform); ok {
+			media, err = resolver.ResolveConversationMedia(ctx, origin)
+			if err != nil {
+				return a.rejectMedia(app, tenant, message, source, platform, err)
+			}
+		}
+	}
 	if len(media) > 0 {
 		media, err = a.prepareMedia(ctx, p, origin, media)
 		if err != nil {
@@ -58,7 +66,9 @@ func (a *Agent) consumeInbox(ctx context.Context) error {
 	validationError := ""
 	if (command == "/bind" || command == "/switch") && len(fields) == 2 {
 		validatedThread, err = parseThread(fields[1])
-		if err != nil || (command == "/switch" && !a.store.linked(key, validatedThread)) {
+		if err != nil {
+			validationError = a.i18n.T(core.MsgDesktopBindUsage)
+		} else if command == "/switch" && !a.store.linked(key, validatedThread) {
 			validationError = a.i18n.T(core.MsgDesktopAllowed)
 		} else {
 			at, e := a.attach(ctx, a.socket, validatedThread, a.timeout)
@@ -162,6 +172,8 @@ func (a *Agent) consumeInbox(ctx context.Context) error {
 		} else {
 			err = a.acceptText(tx, origin, key, source, platform, thread, revision, body, media, reply)
 		}
+	case "/unsupported-attachment":
+		err = reply(a.i18n.T(core.MsgDesktopMediaUnsupported))
 	default:
 		err = reply(a.i18n.T(core.MsgDesktopUnsupported))
 	}

@@ -50,4 +50,7 @@ type ConversationMedia struct {
 	Name   string `json:"name"`
 	Path   string `json:"path,omitempty"`
 	SHA256 string `json:"sha256,omitempty"`
+	// MessageID is set by the adapter after resolving an authenticated reply's
+	// parent attachment. Empty means the resource belongs to the input message.
+	MessageID string `json:"message_id,omitempty"`
 }

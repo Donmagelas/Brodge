@@ -115,6 +115,14 @@ func (p *Platform) onDesktopMessage(ctx context.Context, event *larkim.P2Message
 						}
 					case "at":
 						id, _ := e["user_id"].(string)
+						// Desktop Feishu posts use a placeholder; resolve it only
+						// through the authenticated event's mention identities.
+						for _, mention := range m.Mentions {
+							if mention != nil && mention.Id != nil && stringValue(mention.Key) == id {
+								id = stringValue(mention.Id.OpenId)
+								break
+							}
+						}
 						if id != p.getBotOpenID() {
 							supported = false
 						}
@@ -197,11 +205,63 @@ func (p *Platform) SetCreator(origin core.ConversationOrigin) error {
 	return nil
 }
 
+// Resolve only an explicitly quoted attachment, after the original mention has
+// reached durable ingress. Never scan group history or join nearby messages.
+func (p *Platform) ResolveConversationMedia(ctx context.Context, origin core.ConversationOrigin) ([]core.ConversationMedia, error) {
+	if !p.AcceptConversationOrigin(origin) || origin.ParentID == "" {
+		return nil, fmt.Errorf("invalid-reference-origin")
+	}
+	resp, err := p.client.Im.Message.Get(ctx, larkim.NewGetMessageReqBuilder().MessageId(origin.ParentID).Build())
+	if err != nil || resp == nil || !resp.Success() || resp.Data == nil || len(resp.Data.Items) != 1 {
+		return nil, fmt.Errorf("quoted-message-unavailable")
+	}
+	m := resp.Data.Items[0]
+	if m == nil || stringValue(m.MessageId) != origin.ParentID || stringValue(m.ChatId) != origin.ChatID || (m.Deleted != nil && *m.Deleted) {
+		return nil, fmt.Errorf("quoted-message-mismatch")
+	}
+	kind := stringValue(m.MsgType)
+	if kind != "file" && kind != "image" {
+		return nil, nil // Ordinary replies, including native question answers.
+	}
+	if m.Sender == nil || m.Body == nil {
+		return nil, fmt.Errorf("quoted-attachment-source-unavailable")
+	}
+	s := m.Sender
+	creator := stringValue(s.SenderType) == "user" && stringValue(s.IdType) == "open_id" && stringValue(s.Id) == origin.Actor && stringValue(s.TenantKey) == origin.Tenant
+	bot := stringValue(s.SenderType) == "app" && ((stringValue(s.IdType) == "app_id" && stringValue(s.Id) == p.appID) || (stringValue(s.IdType) == "open_id" && p.getBotOpenID() != "" && stringValue(s.Id) == p.getBotOpenID()))
+	if !creator && !bot {
+		return nil, fmt.Errorf("quoted-attachment-sender-mismatch")
+	}
+	var body struct {
+		FileKey  string `json:"file_key"`
+		ImageKey string `json:"image_key"`
+		FileName string `json:"file_name"`
+	}
+	if json.Unmarshal([]byte(stringValue(m.Body.Content)), &body) != nil {
+		return nil, fmt.Errorf("quoted-attachment-invalid")
+	}
+	media := core.ConversationMedia{Kind: kind, Key: body.FileKey, Name: body.FileName, MessageID: origin.ParentID}
+	if kind == "image" {
+		media.Key, media.Name = body.ImageKey, "image.png"
+	}
+	if media.Key == "" {
+		return nil, fmt.Errorf("quoted-attachment-key-missing")
+	}
+	return []core.ConversationMedia{media}, nil
+}
+
 func (p *Platform) DownloadConversationMedia(ctx context.Context, origin core.ConversationOrigin, media core.ConversationMedia) ([]byte, error) {
 	if !p.AcceptConversationOrigin(origin) || media.Key == "" || (media.Kind != "image" && media.Kind != "file") {
 		return nil, fmt.Errorf("invalid-resource-origin")
 	}
-	resp, err := p.client.Im.MessageResource.Get(ctx, larkim.NewGetMessageResourceReqBuilder().MessageId(origin.MessageID).FileKey(media.Key).Type(media.Kind).Build())
+	message := origin.MessageID
+	if media.MessageID != "" {
+		if media.MessageID != origin.ParentID {
+			return nil, fmt.Errorf("invalid-resource-parent")
+		}
+		message = media.MessageID
+	}
+	resp, err := p.client.Im.MessageResource.Get(ctx, larkim.NewGetMessageResourceReqBuilder().MessageId(message).FileKey(media.Key).Type(media.Kind).Build())
 	if err != nil || resp == nil {
 		return nil, fmt.Errorf("resource-download-unavailable")
 	}
