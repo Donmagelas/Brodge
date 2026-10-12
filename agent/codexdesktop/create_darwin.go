@@ -10,6 +10,7 @@ uintptr_t brodgePrepareDraft(const char *, const char *, char **);
 char *brodgeSubmitDraft(uintptr_t, char **);
 void brodgeCloseDraft(uintptr_t);
 int brodgeAccessibilityGranted(void);
+char *brodgeInspectComposer(char **);
 */
 import "C"
 
@@ -27,6 +28,29 @@ import (
 type nativeDraft struct{ handle C.uintptr_t }
 
 func desktopAccessibilityGranted() bool { return C.brodgeAccessibilityGranted() != 0 }
+
+func inspectDesktopComposer(ctx context.Context) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var message *C.char
+	report := C.brodgeInspectComposer(&message)
+	if report != nil {
+		defer C.free(unsafe.Pointer(report))
+	}
+	if message != nil {
+		defer C.free(unsafe.Pointer(message))
+		return nil, fmt.Errorf("%s", C.GoString(message))
+	}
+	if report == nil {
+		return nil, fmt.Errorf("desktop-composer-report-unavailable")
+	}
+	var result any
+	if err := json.Unmarshal([]byte(C.GoString(report)), &result); err != nil {
+		return nil, err
+	}
+	return result, ctx.Err()
+}
 
 func prepareDesktopDraft(ctx context.Context, text string, media []core.ConversationMedia) (desktopDraft, error) {
 	if err := ctx.Err(); err != nil {

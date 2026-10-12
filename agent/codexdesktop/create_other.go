@@ -13,3 +13,7 @@ func prepareDesktopDraft(context.Context, string, []core.ConversationMedia) (des
 }
 
 func desktopAccessibilityGranted() bool { return false }
+
+func inspectDesktopComposer(context.Context) (any, error) {
+	return nil, fmt.Errorf("输入框检查需要 macOS 的 Brodge.app")
+}

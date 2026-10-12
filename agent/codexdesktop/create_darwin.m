@@ -75,6 +75,86 @@ static bool emptyComposer(AXUIElementRef input) {
         if(textEquals(input,label)) return true;
     return false;
 }
+// Explicit, read-only inspection. Use the same traversal as composer() so that
+// repeated AX references remain visible in matches, with separate node IDs.
+// Never return values, titles, document URLs, or other user-provided text.
+static id diagnosticBool(AXUIElementRef element, CFStringRef key) {
+    id value=attr(element,key);
+    return [value isKindOfClass:[NSNumber class]] ? @([value boolValue]) : [NSNull null];
+}
+static id diagnosticFrame(AXUIElementRef element) {
+    id position=attr(element,kAXPositionAttribute), size=attr(element,kAXSizeAttribute);
+    CGPoint p; CGSize s;
+    if(!position || !size || CFGetTypeID((CFTypeRef)position)!=AXValueGetTypeID() ||
+       CFGetTypeID((CFTypeRef)size)!=AXValueGetTypeID() ||
+       !AXValueGetValue((AXValueRef)position,kAXValueCGPointType,&p) ||
+       !AXValueGetValue((AXValueRef)size,kAXValueCGSizeType,&s)) return [NSNull null];
+    return @{@"x":@(p.x),@"y":@(p.y),@"width":@(s.width),@"height":@(s.height)};
+}
+static NSUInteger diagnosticID(id element, NSMutableArray *nodes) {
+    for(NSUInteger i=0;i<nodes.count;i++) if(CFEqual((CFTypeRef)element,(CFTypeRef)nodes[i])) return i+1;
+    [nodes addObject:element]; return nodes.count;
+}
+static NSDictionary *composerInspection(AXUIElementRef window) {
+    NSMutableArray *found=[NSMutableArray array]; int budget=12000;
+    collect(window,@"AXTextArea",nil,found,0,&budget);
+    bool traversalBudgetOK=withinDeadline() && budget>=0;
+    NSMutableArray *nodes=[NSMutableArray array], *parents=[NSMutableArray array], *matches=[NSMutableArray array];
+    // Bound response size even when an AX tree is malformed or cyclic.
+    for(NSUInteger i=0;i<MIN(found.count,64);i++) {
+        AXUIElementRef input=(AXUIElementRef)found[i];
+        id value=attr(input,kAXValueAttribute);
+        NSString *kind=@"unreadable";
+        if([value isKindOfClass:[NSString class]]) kind=emptyComposer(input)?@"empty-or-placeholder":@"nonempty";
+        Boolean settable=false;
+        id valueSettable=[NSNull null];
+        if(withinDeadline() && AXUIElementIsAttributeSettable(input,kAXValueAttribute,&settable)==kAXErrorSuccess) valueSettable=@(settable);
+        NSMutableArray *ancestors=[NSMutableArray array];
+        id parent=attr(input,kAXParentAttribute);
+        for(int depth=0;parent && depth<12 && withinDeadline();depth++) {
+            NSString *role=stringAttr((AXUIElementRef)parent,kAXRoleAttribute);
+            // Only fixed role names, even if an app supplies arbitrary text.
+            if(![@[@"AXWindow",@"AXWebArea",@"AXGroup",@"AXScrollArea",@"AXSplitGroup",@"AXTabGroup",@"AXSheet",@"AXDialog",@"AXToolbar",@"AXList",@"AXRow",@"AXUnknown"] containsObject:role]) role=@"unknown";
+            [ancestors addObject:@{@"node":@(diagnosticID(parent,parents)),@"role":role,@"frame":diagnosticFrame((AXUIElementRef)parent)}];
+            if(CFEqual((CFTypeRef)parent,window)) break;
+            id next=attr((AXUIElementRef)parent,kAXParentAttribute);
+            if(next && CFEqual((CFTypeRef)next,(CFTypeRef)parent)) break;
+            parent=next;
+        }
+        [matches addObject:@{@"match":@(i+1),@"node":@(diagnosticID((id)input,nodes)),
+            @"frame":diagnosticFrame(input),@"focused":diagnosticBool(input,kAXFocusedAttribute),
+            @"enabled":diagnosticBool(input,kAXEnabledAttribute),@"hidden":diagnosticBool(input,CFSTR("AXHidden")),
+            @"value_settable":valueSettable,@"value_kind":kind,
+            @"value_length":[value isKindOfClass:[NSString class]]?@([value length]):(id)[NSNull null],
+            @"ancestors":ancestors}];
+    }
+    id frame=diagnosticFrame(window);
+    return @{@"inputs":@(found.count),@"reported_unique_nodes":@(nodes.count),@"visited":@(12000-budget),
+        @"traversal_budget_ok":@(traversalBudgetOK),@"details_budget_ok":@(withinDeadline() && found.count<=64),
+        @"traversal_depth_limit":@60,@"ancestor_limit":@12,@"reported_match_limit":@64,
+        @"window_frame":frame,@"matches":matches};
+}
+char *brodgeInspectComposer(char **error) {
+    @autoreleasepool {
+        deadline=[NSProcessInfo processInfo].systemUptime+20;
+        // No prompt, activation, shortcut, focus change, paste, or submission.
+        if(!AXIsProcessTrusted()) { *error=strdup("Brodge 尚无辅助功能权限；此次检查不会请求授权"); return NULL; }
+        NSArray *apps=[NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.openai.codex"];
+        if(apps.count!=1) { *error=strdup("请先打开一个 Codex Desktop 实例"); return NULL; }
+        AXUIElementRef app=AXUIElementCreateApplication([apps[0] processIdentifier]);
+        AXUIElementSetMessagingTimeout(app,2);
+        id window=attr(app,kAXFocusedWindowAttribute);
+        if(!window) { CFRelease(app); *error=strdup("desktop-focused-window-missing"); return NULL; }
+        NSMutableDictionary *report=[[composerInspection((AXUIElementRef)window) mutableCopy] autorelease];
+        id after=attr(app,kAXFocusedWindowAttribute);
+        report[@"same_window_after"]=@(after && CFEqual((CFTypeRef)after,(CFTypeRef)window));
+        report[@"captured_at"]=[[NSDate date] description];
+        NSData *data=[NSJSONSerialization dataWithJSONObject:report options:0 error:nil];
+        CFRelease(app);
+        if(!data) { *error=strdup("desktop-composer-report-unavailable"); return NULL; }
+        return strdup([[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] autorelease].UTF8String);
+    }
+}
 static AXUIElementRef menu(AXUIElementRef app, NSArray *labels) {
     return unique((AXUIElementRef)attr(app, kAXMenuBarAttribute), @"AXMenuItem", labels);
 }

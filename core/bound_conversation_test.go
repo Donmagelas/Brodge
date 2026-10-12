@@ -14,6 +14,7 @@ type boundTestAgent struct {
 	received, bound, unbound int
 	recoveryError            error
 	creationRecoveries       int
+	composerInspections      int
 }
 
 func (a *boundTestAgent) Name() string                                             { return "test" }
@@ -44,6 +45,10 @@ func (a *boundTestAgent) RetryConversationCreation(_ context.Context, id, thread
 	}
 	a.creationRecoveries++
 	return nil
+}
+func (a *boundTestAgent) InspectConversationComposer(context.Context) (any, error) {
+	a.composerInspections++
+	return map[string]any{"inputs": 5, "reported_unique_nodes": 1}, nil
 }
 
 type localSetupStub struct {
@@ -113,6 +118,8 @@ func TestRetainedConversationAndPairingRoutesRequireToken(t *testing.T) {
 		{"POST", "/api/v1/projects/desktop/conversation", `{"action":"recover_creation","id":"job"}`, false, 401},
 		{"POST", "/api/v1/projects/desktop/conversation", `{"action":"recover_creation","id":"job"}`, true, 200},
 		{"POST", "/api/v1/projects/desktop/conversation", `{"action":"recover_creation","id":"wrong"}`, true, 400},
+		{"POST", "/api/v1/projects/desktop/conversation", `{"action":"inspect_composer"}`, false, 401},
+		{"POST", "/api/v1/projects/desktop/conversation", `{"action":"inspect_composer"}`, true, 200},
 		{"POST", "/api/v1/projects/desktop/conversation", `{"action":"create"}`, true, 400},
 		{"POST", "/api/v1/projects/desktop/conversation", `{"action":"unbind","session_key":"chat","thread":"T1"}`, false, 401},
 		{"POST", "/api/v1/projects/desktop/conversation", `{"action":"unbind","session_key":"chat","thread":"T1"}`, true, 200},
@@ -130,7 +137,7 @@ func TestRetainedConversationAndPairingRoutesRequireToken(t *testing.T) {
 			t.Fatalf("%s: %d %s", tc.path, w.Code, w.Body.String())
 		}
 	}
-	if a.bound != 1 || a.unbound != 1 || setup.actions != 1 || a.creationRecoveries != 1 {
+	if a.bound != 1 || a.unbound != 1 || setup.actions != 1 || a.creationRecoveries != 1 || a.composerInspections != 1 {
 		t.Fatal("retained routes did not execute")
 	}
 	m.Stop()

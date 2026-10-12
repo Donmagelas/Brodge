@@ -27,6 +27,9 @@ export default function DesktopConversation({ name, feishuConnectionStatus }: { 
   const [saving, setSaving] = useState(false);
   const recoveringRef = useRef(new Set<string>());
   const [recovering, setRecovering] = useState<Record<string, boolean>>({});
+  const inspectingRef = useRef(false);
+  const [inspecting, setInspecting] = useState(false);
+  const [inspection, setInspection] = useState<{ id: string; report: string } | null>(null);
   const load = () => api.get<State>(`/projects/${encodeURIComponent(name)}/conversation`).then(s => { setState(s); setError(s.error || ''); }).catch(e => setError(String(e.message)));
   useEffect(() => {
     let active = true, inFlight = false;
@@ -62,6 +65,15 @@ export default function DesktopConversation({ name, feishuConnectionStatus }: { 
     catch (e: any) { setError(e.message); }
     finally { recoveringRef.current.delete(id); setRecovering(v => ({ ...v, [id]: false })); }
   };
+  const inspectComposer = async (id: string) => {
+    if (inspectingRef.current) return;
+    inspectingRef.current = true; setInspecting(true); setInspection(null);
+    try {
+      const report = await api.post(`/projects/${encodeURIComponent(name)}/conversation`, { action: 'inspect_composer' });
+      setInspection({ id, report: JSON.stringify(report, null, 2) });
+    } catch (e: any) { setInspection({ id, report: e.message }); }
+    finally { inspectingRef.current = false; setInspecting(false); }
+  };
   const creationLabels: Record<string, string> = { create_pending: '等待新建会话', create_preparing: '准备新会话', create_sending: '正在发送首条消息', create_verifying: '正在核对新会话', create_uncertain: '首次发送待确认', create_failed: '新建未发送' };
   const boundChats = state?.bindings.filter(b => state.conversations.some(c => c.session_key === b.session_key)) ?? [];
   const newMessages = state?.messages.filter(m => m.state.startsWith('create_') && !state.conversations.some(c => c.session_key === m.session_key && c.thread === m.thread)) ?? [];
@@ -71,6 +83,11 @@ export default function DesktopConversation({ name, feishuConnectionStatus }: { 
       {showChat && <p className="font-medium">{state?.bindings.find(b => b.session_key === m.session_key)?.display_name || '新会话'}</p>}
       <p>{creationLabels[m.state] || t(`desktop.${m.state}`, m.state)}{m.error && ` · ${m.error}`}</p>
       {m.state === 'create_failed' && <Button className="mt-2" disabled={recovering[m.id]} onClick={() => recover(m.id)}>{recovering[m.id] ? '正在准备，请稍候…' : '重试创建（原消息尚未发送）'}</Button>}
+      {m.state === 'create_failed' && m.error.startsWith('desktop-composer-lookup') && <div className="mt-2">
+        <Button variant="secondary" disabled={inspecting || Object.values(recovering).some(Boolean)} onClick={() => inspectComposer(m.id)}>{inspecting ? '正在检查…' : '检查输入框（不发送）'}</Button>
+        <p className="text-xs mt-1">请先让 Codex 停留在出错的新建页面。检查当前窗口的输入框结构，不切换页面、不输入或发送消息、不记录聊天正文。</p>
+        {inspection?.id === m.id && <details open className="mt-2"><summary className="cursor-pointer">本次检查结果（不是失败时刻的快照）</summary><pre className="text-xs whitespace-pre-wrap break-all max-h-80 overflow-auto p-2 bg-gray-50 dark:bg-white/5">{inspection.report}</pre></details>}
+      </div>}
       {['create_uncertain', 'create_verifying'].includes(m.state) && <p className="mt-2">正在自动核对新会话，确认后会自动绑定并回传结果。不会重复发送，无需填写会话链接。</p>}
     </div>);
   return <div className="space-y-4 text-gray-900 dark:text-gray-100">

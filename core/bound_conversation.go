@@ -82,6 +82,22 @@ func (m *ManagementServer) handleBoundConversation(w http.ResponseWriter, r *htt
 			return
 		}
 		if body.Action != "" {
+			if body.Action == "inspect_composer" {
+				inspector, ok := bound.(interface {
+					InspectConversationComposer(context.Context) (any, error)
+				})
+				if !ok {
+					mgmtError(w, http.StatusBadRequest, "composer inspection unavailable")
+					return
+				}
+				report, err := inspector.InspectConversationComposer(r.Context())
+				if err != nil {
+					mgmtError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+				mgmtJSON(w, http.StatusOK, report)
+				return
+			}
 			if body.Action == "unbind" {
 				if err := bound.UnbindConversation(r.Context(), body.SessionKey, body.Thread); err != nil {
 					mgmtError(w, http.StatusBadRequest, err.Error())

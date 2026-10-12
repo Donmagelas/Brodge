@@ -24,6 +24,16 @@ type desktopDraft interface {
 	Close()
 }
 
+// Called only by the explicit local management action, never by polling or
+// recovery. Do not inspect while creation owns the Desktop draft.
+func (a *Agent) InspectConversationComposer(ctx context.Context) (any, error) {
+	if !a.creationMu.TryLock() {
+		return nil, fmt.Errorf("正在创建会话，请完成后再检查")
+	}
+	defer a.creationMu.Unlock()
+	return inspectDesktopComposer(ctx)
+}
+
 // The installed Desktop's index supplies candidates, never proof of submission.
 // Open read-only and read only IDs; exact first-turn evidence still comes from IPC.
 func desktopThreadIndex(ctx context.Context) ([]string, error) {
