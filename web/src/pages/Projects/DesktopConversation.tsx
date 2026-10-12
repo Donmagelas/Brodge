@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import api from '@/api/client';
 import { Card, Button, Input } from '@/components/ui';
 import DesktopFeishuSetup from './DesktopFeishuSetup';
+import type { FeishuConnectionStatus } from './DesktopFeishuSetup';
 
 type Conversation = { session_key: string; thread: string; title: string; latest_query: string };
 type Binding = { session_key: string; chat: string; actor: string; display_name: string; thread: string; revision: number };
@@ -16,7 +17,7 @@ type State = {
   messages: { id: string; session_key: string; thread: string; title: string; state: string; error: string }[];
   outbox: { id: string; state: string }[];
 };
-export default function DesktopConversation({ name }: { name: string }) {
+export default function DesktopConversation({ name, feishuConnectionStatus }: { name: string; feishuConnectionStatus: FeishuConnectionStatus }) {
   const { t } = useTranslation();
   const [state, setState] = useState<State | null>(null);
   const [key, setKey] = useState('');
@@ -73,7 +74,7 @@ export default function DesktopConversation({ name }: { name: string }) {
       {['create_uncertain', 'create_verifying'].includes(m.state) && <p className="mt-2">正在自动核对新会话，确认后会自动绑定并回传结果。不会重复发送，无需填写会话链接。</p>}
     </div>);
   return <div className="space-y-4 text-gray-900 dark:text-gray-100">
-    <DesktopFeishuSetup name={name} />
+    <DesktopFeishuSetup name={name} connectionStatus={feishuConnectionStatus} />
     <Card><h3 className="font-semibold mb-3">{t('desktop.title')}</h3><p className="text-sm text-gray-500 mb-4">{t('desktop.hint')}</p>
       <Input placeholder="codex://threads/..." label={t('desktop.thread')} value={thread} onChange={e => setThread(e.target.value)} />
       <label className="block text-sm mt-3">{t('desktop.chat')}

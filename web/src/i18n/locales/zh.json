@@ -32,11 +32,11 @@
       "scan": "打开手机飞书扫一扫，或打开下方官方页面完成创建。",
       "open": "打开官方页面",
       "expires": "有效至",
-      "owner": "创建人",
+      "owner": "创建人 ID",
       "start": "扫码创建",
       "resume": "继续创建",
       "check": "重新检查应用",
-      "next": "应用已创建。先配对测试私聊，再绑定 Desktop 会话。",
+      "next": "应用已创建。通过机器人私聊确认使用者身份后，即可启用连接。",
       "status": {
         "idle": "尚未创建应用",
         "starting": "正在准备二维码…",
@@ -47,8 +47,8 @@
         "expired": "二维码已过期",
         "denied": "已拒绝授权",
         "cancelled": "已取消创建",
-        "pairing": "等待创建人在机器人私聊中发送配对码",
-        "paired": "测试私聊已配对"
+        "pairing": "等待确认使用者身份",
+        "paired": "使用者身份已确认"
       },
       "errors": {
         "network": "连接飞书失败，请检查网络后重试。",
@@ -63,9 +63,17 @@
         "pairing-failed": "配对连接失败，请检查网络和飞书事件订阅后重试。"
       },
       "pairHint": "打开刚创建的机器人私聊，发送下方配对码。只接受创建人的消息，配对码不会交给 Codex。",
-      "pair": "配对测试私聊",
-      "chat": "测试私聊",
-      "pairedNext": "已记录测试私聊。下方查看会话绑定和消息状态。"
+      "pair": "确认使用者身份",
+      "chat": "机器人私聊 ID",
+      "connectionTitle": "飞书连接",
+      "details": "连接详情",
+      "enable": "启用飞书连接",
+      "connectionStatus": {
+        "unknown": "状态暂不可用",
+        "not_enabled": "待启用",
+        "connected": "已连接",
+        "disconnected": "未连接"
+      }
     }
   },
   "common": {

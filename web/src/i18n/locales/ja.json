@@ -32,11 +32,11 @@
       "scan": "Open Feishu on your phone and scan this code, or open the official page below.",
       "open": "Open official page",
       "expires": "Valid until",
-      "owner": "Creator",
+      "owner": "作成者 ID",
       "start": "Create with QR code",
       "resume": "Continue creation",
       "check": "Retry app check",
-      "next": "アプリを作成しました。テストチャットを接続し、Desktop 会話を指定してください。",
+      "next": "アプリを作成しました。ボットとの個人チャットで本人確認を行い、接続を有効にしてください。",
       "status": {
         "idle": "No app created yet",
         "starting": "Preparing QR code…",
@@ -47,8 +47,8 @@
         "expired": "QR code expired",
         "denied": "Authorization declined",
         "cancelled": "Creation cancelled",
-        "pairing": "作成者がボットとの個人チャットでコードを送信するのを待っています",
-        "paired": "テストチャットを接続しました"
+        "pairing": "本人確認を待っています",
+        "paired": "本人確認済み"
       },
       "errors": {
         "network": "Could not connect to Feishu. Check your network and retry.",
@@ -63,9 +63,17 @@
         "pairing-failed": "接続に失敗しました。ネットワークと Feishu のイベント購読を確認してください。"
       },
       "pairHint": "作成したボットとの個人チャットを開き、下のコードを送信してください。作成者のみペアリングできます。コードは Codex に送信されません。",
-      "pair": "テストチャットを接続",
-      "chat": "テストチャット",
-      "pairedNext": "テストチャットを保存しました。下で Desktop 会話を指定できます。"
+      "pair": "本人確認",
+      "chat": "ボットとの個人チャット ID",
+      "connectionTitle": "Feishu 接続",
+      "details": "接続の詳細",
+      "enable": "Feishu 接続を有効にする",
+      "connectionStatus": {
+        "unknown": "状態を取得できません",
+        "not_enabled": "未有効",
+        "connected": "接続済み",
+        "disconnected": "未接続"
+      }
     }
   },
   "common": {

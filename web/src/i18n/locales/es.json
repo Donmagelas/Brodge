@@ -32,11 +32,11 @@
       "scan": "Open Feishu on your phone and scan this code, or open the official page below.",
       "open": "Open official page",
       "expires": "Valid until",
-      "owner": "Creator",
+      "owner": "ID del creador",
       "start": "Create with QR code",
       "resume": "Continue creation",
       "check": "Retry app check",
-      "next": "Aplicación creada. Vincula un chat de prueba y una conversación de Desktop.",
+      "next": "Aplicación creada. Confirma tu identidad en el chat privado del bot y activa la conexión.",
       "status": {
         "idle": "No app created yet",
         "starting": "Preparing QR code…",
@@ -47,8 +47,8 @@
         "expired": "QR code expired",
         "denied": "Authorization declined",
         "cancelled": "Creation cancelled",
-        "pairing": "Esperando el código del creador en el chat privado del bot",
-        "paired": "Chat de prueba vinculado"
+        "pairing": "Esperando confirmación de identidad",
+        "paired": "Identidad confirmada"
       },
       "errors": {
         "network": "Could not connect to Feishu. Check your network and retry.",
@@ -63,9 +63,17 @@
         "pairing-failed": "No se pudo vincular. Revisa la red y la suscripción de eventos de Feishu."
       },
       "pairHint": "Abre un chat privado con el nuevo bot y envía el código. Solo el creador puede vincularlo; el código nunca se envía a Codex.",
-      "pair": "Vincular chat de prueba",
-      "chat": "Chat de prueba",
-      "pairedNext": "Chat guardado. Gestiona la conversación de Desktop abajo."
+      "pair": "Confirmar identidad",
+      "chat": "ID del chat privado del bot",
+      "connectionTitle": "Conexión de Feishu",
+      "details": "Detalles de conexión",
+      "enable": "Activar conexión de Feishu",
+      "connectionStatus": {
+        "unknown": "Estado no disponible",
+        "not_enabled": "Sin activar",
+        "connected": "Conectado",
+        "disconnected": "Desconectado"
+      }
     }
   },
   "common": {

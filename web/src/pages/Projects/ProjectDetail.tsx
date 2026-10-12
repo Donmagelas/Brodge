@@ -5,6 +5,7 @@ import { useAuthStore } from '@/store/auth';
 import { useThemeStore } from '@/store/theme';
 import { Button } from '@/components/ui';
 import DesktopConversation from './DesktopConversation';
+import type { FeishuConnectionStatus } from './DesktopFeishuSetup';
 type Status={connections:{name:string;platforms:{name:string;connected:boolean;degraded_reason?:string}[]}[]};
 export default function ProjectDetail(){
  const {name}=useParams();
@@ -25,7 +26,8 @@ export default function ProjectDetail(){
   load();const timer=setInterval(load,3000);return()=>{active=false;clearInterval(timer);};
  },[closed]);
  const connection=status?.connections.find(c=>!name || c.name===name);
- const platform=connection?.platforms[0];
+ const platform=connection?.platforms.find(p=>p.name==='feishu');
+ const feishuConnectionStatus:FeishuConnectionStatus=error||!status?'unknown':!platform?'not_enabled':platform.connected?'connected':'disconnected';
  if(closed)return <div className="p-8"><h1>Brodge 已退出</h1><p>后台已停止，可以关闭此页面。再次双击 Brodge 可重新启动。</p></div>;
  return <div className="max-w-5xl mx-auto px-5 py-8 text-gray-900 dark:text-gray-100">
   <header className="flex justify-between items-start gap-4 mb-8">
@@ -34,10 +36,10 @@ export default function ProjectDetail(){
   </header>
   <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4 mb-5 text-sm" role="status">
    <span className="mr-6">本机服务：{error?'连接失败':status?'已连接':'连接中'}</span>
-   <span>飞书：{!platform?'尚未启用':platform.connected?'长连接已连接':'长连接未连接'}</span>
+   <span>飞书：{feishuConnectionStatus==='unknown'?'状态暂不可用':!platform?'尚未启用':platform.connected?'长连接已连接':'长连接未连接'}</span>
    {platform?.degraded_reason && <p className="text-amber-600 mt-2">连接诊断：{platform.degraded_reason}</p>}
    {error && <p role="alert" className="text-red-500 mt-2">{error}</p>}
   </div>
-  {connection?<DesktopConversation name={connection.name}/>:status && <p>找不到该连接</p>}
+  {connection?<DesktopConversation name={connection.name} feishuConnectionStatus={feishuConnectionStatus}/>:status && <p>找不到该连接</p>}
  </div>;
 }

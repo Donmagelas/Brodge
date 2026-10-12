@@ -32,11 +32,11 @@
       "scan": "Open Feishu on your phone and scan this code, or open the official page below.",
       "open": "Open official page",
       "expires": "Valid until",
-      "owner": "Creator",
+      "owner": "ID создателя",
       "start": "Create with QR code",
       "resume": "Continue creation",
       "check": "Retry app check",
-      "next": "Приложение создано. Подключите тестовый чат и диалог Desktop.",
+      "next": "Приложение создано. Подтвердите свою личность в личном чате с ботом, затем включите подключение.",
       "status": {
         "idle": "No app created yet",
         "starting": "Preparing QR code…",
@@ -47,8 +47,8 @@
         "expired": "QR code expired",
         "denied": "Authorization declined",
         "cancelled": "Creation cancelled",
-        "pairing": "Ожидание кода от создателя в личном чате с ботом",
-        "paired": "Тестовый чат подключён"
+        "pairing": "Ожидание подтверждения личности",
+        "paired": "Личность подтверждена"
       },
       "errors": {
         "network": "Could not connect to Feishu. Check your network and retry.",
@@ -63,9 +63,17 @@
         "pairing-failed": "Ошибка подключения. Проверьте сеть и подписку на события Feishu."
       },
       "pairHint": "Откройте личный чат с новым ботом и отправьте код ниже. Подключить чат может только создатель приложения. Код не передаётся в Codex.",
-      "pair": "Подключить тестовый чат",
-      "chat": "Тестовый чат",
-      "pairedNext": "Чат сохранён. Привязка диалога Desktop настраивается ниже."
+      "pair": "Подтвердить личность",
+      "chat": "ID личного чата с ботом",
+      "connectionTitle": "Подключение Feishu",
+      "details": "Сведения о подключении",
+      "enable": "Включить подключение Feishu",
+      "connectionStatus": {
+        "unknown": "Статус недоступен",
+        "not_enabled": "Не включено",
+        "connected": "Подключено",
+        "disconnected": "Не подключено"
+      }
     }
   },
   "common": {
