@@ -179,7 +179,7 @@ func (s *store) ingest(p core.Platform, msg *core.Message) error {
 		return err
 	}
 	if _, ok := p.(core.ConversationReactor); ok {
-		if err = s.output(tx, "ingress:"+o.AppID+":"+o.Tenant+":"+o.MessageID, "reaction", source, p.Name(), "OK"); err != nil {
+		if err = s.output(tx, "ingress:"+o.AppID+":"+o.Tenant+":"+o.MessageID, "reaction", source, p.Name(), "MUSCLE"); err != nil {
 			return err
 		}
 	}

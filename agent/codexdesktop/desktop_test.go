@@ -1687,10 +1687,12 @@ func TestCUJ_EntryListsAndSwitchCannotImportAnotherEntry(t *testing.T) {
 type reactingPlatform struct {
 	fakePlatform
 	reactions int
+	lastEmoji string
 }
 
-func (p *reactingPlatform) ReactConversation(context.Context, core.ConversationOrigin, string) (string, error) {
+func (p *reactingPlatform) ReactConversation(_ context.Context, _ core.ConversationOrigin, emoji string) (string, error) {
 	p.reactions++
+	p.lastEmoji = emoji
 	return "", fmt.Errorf("reaction unavailable")
 }
 func TestCUJ_ReactionFailureQuietTaskFinalOnly(t *testing.T) {
@@ -1707,6 +1709,12 @@ func TestCUJ_ReactionFailureQuietTaskFinalOnly(t *testing.T) {
 	}
 	for i := 0; i < 4; i++ {
 		step(t, a)
+	}
+	if err := a.HandleConversation(context.Background(), p, incoming("A", "DM", "m", "hello")); err != nil {
+		t.Fatal(err)
+	}
+	if p.lastEmoji != "MUSCLE" || count(t, a.store, `SELECT count(*) FROM outbox WHERE kind='reaction'`) != 2 || count(t, a.store, `SELECT count(*) FROM outbox WHERE kind='reaction' AND body='MUSCLE'`) != 2 {
+		t.Fatal("selected reaction was lost or redelivery created another reaction")
 	}
 	f.mu.Lock()
 	turn := obj(list(f.states["T1"]["turns"])[0])

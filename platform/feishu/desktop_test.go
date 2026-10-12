@@ -283,7 +283,7 @@ func TestOfficialSDKResourceReactionMarkdownUploadAndMediaReply(t *testing.T) {
 		case "/open-apis/im/v1/messages/original/reactions":
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
-			if body["reaction_type"].(map[string]any)["emoji_type"] != "OK" {
+			if body["reaction_type"].(map[string]any)["emoji_type"] != "MUSCLE" {
 				t.Error(body)
 			}
 			fmt.Fprint(w, `{"code":0,"data":{"reaction_id":"reaction"}}`)
@@ -350,7 +350,7 @@ func TestOfficialSDKResourceReactionMarkdownUploadAndMediaReply(t *testing.T) {
 	defer server.Close()
 	p := &Platform{desktopBound: true, appID: "resource-test", desktopTenant: "tenant", allowFrom: "actor", client: lark.NewClient("resource-test", "local-secret", lark.WithOpenBaseUrl(server.URL), lark.WithHttpClient(server.Client()))}
 	o := core.ConversationOrigin{AppID: p.appID, Tenant: "tenant", ChatType: "p2p", ChatID: "chat", Actor: "actor", MessageID: "original"}
-	if _, err := p.ReactConversation(context.Background(), o, "OK"); err != nil {
+	if _, err := p.ReactConversation(context.Background(), o, "MUSCLE"); err != nil {
 		t.Fatal(err)
 	}
 	actual, err := p.DownloadConversationMedia(context.Background(), o, core.ConversationMedia{Kind: "file", Key: "resource"})
