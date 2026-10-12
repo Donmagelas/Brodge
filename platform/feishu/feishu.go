@@ -30,6 +30,8 @@ type Platform struct {
 	cancel                                                              context.CancelFunc
 	connected                                                           bool
 	failure                                                             string
+	chatNamesMu                                                         sync.Mutex
+	chatNames                                                           map[string]cachedChatName
 }
 
 func New(opts map[string]any) (core.Platform, error) {

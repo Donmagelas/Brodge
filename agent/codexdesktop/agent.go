@@ -42,6 +42,9 @@ type Agent struct {
 	prepareNew    func(context.Context, string, []core.ConversationMedia) (desktopDraft, error)
 	creationMu    sync.Mutex
 	creationIndex func(context.Context) ([]string, error)
+	metadataRoot  string
+	metadataMu    sync.Mutex
+	queryPreviews map[string]queryPreview
 }
 
 var _ core.Agent = (*Agent)(nil)
@@ -119,6 +122,8 @@ func New(opts map[string]any) (*Agent, error) {
 	a.attach = a.attachWithActivation
 	a.prepareNew = prepareDesktopDraft
 	a.creationIndex = desktopThreadIndex
+	a.metadataRoot, _ = desktopStateRoot()
+	a.queryPreviews = make(map[string]queryPreview)
 	return a, nil
 }
 func (a *Agent) Name() string { return "codex-desktop" }
@@ -279,6 +284,25 @@ func (a *Agent) BindConversation(ctx context.Context, key, thread string) error 
 	return a.store.bind(key, thread)
 }
 
+func (a *Agent) UnbindConversation(ctx context.Context, key, thread string) error {
+	thread, err := parseThread(thread)
+	if err != nil || key == "" {
+		return fmt.Errorf("请选择要解除的会话绑定")
+	}
+	tx, err := a.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM bindings WHERE origin=? AND thread=?`, key, thread); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM binding_threads WHERE origin=? AND thread=?`, key, thread); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // BindPairedConversation records an already verified private pairing message and
 // binds it without treating the pairing code as a prompt or sending a reply.
 func (a *Agent) BindPairedConversation(ctx context.Context, p core.Platform, origin core.ConversationOrigin, thread string) error {
@@ -385,17 +409,17 @@ func (a *Agent) ConversationState() any {
 			out[name] = entries
 		}
 	}
-	query("bindings", `SELECT i.source,COALESCE(b.thread,''),COALESCE(b.revision,0) FROM inbox i LEFT JOIN bindings b ON b.origin=i.key GROUP BY i.key ORDER BY i.rowid`, func(rows *sql.Rows) (any, error) {
-		var source, thread string
+	query("bindings", `SELECT i.source,i.platform,COALESCE(b.thread,''),COALESCE(b.revision,0) FROM inbox i LEFT JOIN bindings b ON b.origin=i.key GROUP BY i.key ORDER BY i.rowid`, func(rows *sql.Rows) (any, error) {
+		var source, platform, thread string
 		var rev int
-		if err := rows.Scan(&source, &thread, &rev); err != nil {
+		if err := rows.Scan(&source, &platform, &thread, &rev); err != nil {
 			return nil, err
 		}
 		var o core.ConversationOrigin
 		if err := json.Unmarshal([]byte(source), &o); err != nil {
 			return nil, err
 		}
-		return map[string]any{"session_key": originKey(o), "chat": o.ChatID, "actor": o.Actor, "thread": thread, "revision": rev}, nil
+		return map[string]any{"session_key": originKey(o), "chat": o.ChatID, "chat_type": o.ChatType, "actor": o.Actor, "thread": thread, "revision": rev, "source": o, "platform": platform}, nil
 	})
 	query("conversations", `SELECT origin,thread FROM binding_threads ORDER BY rowid`, func(rows *sql.Rows) (any, error) {
 		var key, thread string
@@ -412,6 +436,7 @@ func (a *Agent) ConversationState() any {
 		err := rows.Scan(&id, &state)
 		return map[string]string{"id": id, "state": state}, err
 	})
+	a.addConversationLabels(out)
 	return out
 }
 func (a *Agent) step(ctx context.Context) error {

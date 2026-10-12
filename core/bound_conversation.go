@@ -82,6 +82,14 @@ func (m *ManagementServer) handleBoundConversation(w http.ResponseWriter, r *htt
 			return
 		}
 		if body.Action != "" {
+			if body.Action == "unbind" {
+				if err := bound.UnbindConversation(r.Context(), body.SessionKey, body.Thread); err != nil {
+					mgmtError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+				mgmtOK(w, "conversation unbound")
+				return
+			}
 			creator, ok := bound.(interface {
 				RetryConversationCreation(context.Context, string, string) error
 			})

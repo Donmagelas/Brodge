@@ -188,6 +188,7 @@ func testAgent(t *testing.T, socket string) *Agent {
 		t.Fatal(err)
 	}
 	a.timeout = 200 * time.Millisecond
+	a.metadataRoot = t.TempDir()
 	a.openThread = nil // Unit tests must never navigate the user's Desktop.
 	a.creationIndex = func(context.Context) ([]string, error) { return []string{"T1", "T2"}, nil }
 	a.prepareNew = func(context.Context, string, []core.ConversationMedia) (desktopDraft, error) {
@@ -2432,4 +2433,178 @@ func TestLiveOpenAuthorizedDesktopThread(t *testing.T) {
 		}
 	}
 	t.Fatal("Desktop did not load the authorized thread", err)
+}
+
+func TestCUJ_UnbindScopedRelationshipSurvivesRestart(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	ctx := context.Background()
+	origin := *incoming("A", "DM", "pair", "").ConversationOrigin
+	key := originKey(origin)
+	if err := a.BindPairedConversation(ctx, p, origin, "T1"); err != nil {
+		t.Fatal(err)
+	}
+	accept(t, a, p, incoming("A", "DM", "bind2", "/bind T2"))
+	accept(t, a, p, incoming("A", "other-group", "other-bind", "/bind T1"))
+	accept(t, a, p, incoming("A", "DM", "work", "记住这条提问"))
+	step(t, a)
+	f.finish("T2", "已记住", false)
+	step(t, a)
+	step(t, a)
+	jobs := count(t, a.store, `SELECT count(*) FROM jobs`)
+	outputs := count(t, a.store, `SELECT count(*) FROM outbox`)
+	if err := a.UnbindConversation(ctx, key, "T1"); err != nil {
+		t.Fatal(err)
+	}
+	if a.store.linked(key, "T1") || count(t, a.store, `SELECT count(*) FROM bindings WHERE origin=? AND thread='T2'`, key) != 1 {
+		t.Fatal("non-current unbind changed current")
+	}
+	if err := a.BindConversation(ctx, key, "T1"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := a.UnbindConversation(ctx, key, "codex://threads/T1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.BindPairedConversation(ctx, p, origin, "T1"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(a.dataDir, "bridge.sqlite")
+	if err := a.store.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	a.store, err = openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.store.linked(key, "T1") || count(t, a.store, `SELECT count(*) FROM bindings WHERE origin=?`, key) != 0 {
+		t.Fatal("deleted binding restored or switched to alternative")
+	}
+	otherKey := originKey(*incoming("A", "other-group", "x", "").ConversationOrigin)
+	if !a.store.linked(otherKey, "T1") || !a.store.linked(key, "T2") {
+		t.Fatal("unrelated relationship deleted")
+	}
+	if count(t, a.store, `SELECT count(*) FROM jobs`) != jobs || count(t, a.store, `SELECT count(*) FROM outbox`) != outputs {
+		t.Fatal("history deleted")
+	}
+	state := a.ConversationState().(map[string]any)
+	for _, v := range state["conversations"].([]any) {
+		c := v.(map[string]string)
+		if c["session_key"] == key && c["thread"] == "T1" {
+			t.Fatal("removed conversation still listed")
+		}
+	}
+	accept(t, a, p, incoming("A", "DM", "list", "/list"))
+	accept(t, a, p, incoming("A", "DM", "current", "/current"))
+	accept(t, a, p, incoming("A", "DM", "removed-switch", "/switch T1"))
+	if count(t, a.store, `SELECT count(*) FROM bindings WHERE origin=?`, key) != 0 {
+		t.Fatal("switch restored removed association")
+	}
+	// Explicitly binding the old conversation is still possible.
+	if err := a.BindConversation(ctx, key, "T2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.UnbindConversation(ctx, key, "T2"); err != nil {
+		t.Fatal(err)
+	}
+	accept(t, a, p, incoming("A", "DM", "new-message", "开始一个新会话"))
+	if count(t, a.store, `SELECT count(*) FROM jobs WHERE origin=? AND state='create_pending' AND thread=''`, key) != 1 {
+		t.Fatal("unbound message did not use normal creation flow")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.starts != 1 {
+		t.Fatal("management operation ran a model turn", f.starts)
+	}
+}
+
+type namedPlatform struct{ *fakePlatform }
+
+func (p *namedPlatform) ConversationChatName(context.Context, core.ConversationOrigin) (string, error) {
+	return "测试群", nil
+}
+
+func TestCUJ_ConversationLabelsUseDesktopNameAndLatestUserQuery(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	accept(t, a, p, incoming("A", "DM", "bind1", "/bind T1"))
+	accept(t, a, p, incoming("A", "DM", "bind2", "/bind T2"))
+	group := incoming("A", "group", "bind-group", "/bind T1")
+	group.ConversationOrigin.ChatType = "group"
+	accept(t, a, p, group)
+	a.mu.Lock()
+	a.platforms[p.Name()] = &namedPlatform{p}
+	a.mu.Unlock()
+	root := a.metadataRoot
+	if err := os.MkdirAll(filepath.Join(root, "sessions"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "sessions", "thread.jsonl")
+	user := func(text string) string {
+		return marshal(wire{"type": "response_item", "payload": wire{"type": "message", "role": "user", "content": []any{wire{"type": "input_text", "text": text}}}}) + "\n"
+	}
+	// The last query was sent directly in Desktop, not via this bridge's inbox.
+	history := user("最初问题") + user("Desktop 最新提问\n附件 \"a.pdf\"：\"/private/file.pdf\"") + marshal(wire{"type": "response_item", "payload": wire{"type": "message", "role": "assistant", "content": []any{wire{"type": "output_text", "text": strings.Repeat("答", 50000)}}}}) + "\n" + user("# AGENTS.md instructions for /test\nmetadata")
+	if err := os.WriteFile(path, []byte(history), 0600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(root, "state_5.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err = db.Exec(`CREATE TABLE threads(id TEXT,title TEXT,name TEXT,rollout_path TEXT); INSERT INTO threads VALUES('T1','原始首条问题','用户改过的标题',?); INSERT INTO threads VALUES('T2','# Files mentioned by the user:\n\n## My request:\n核对附件',NULL,'/missing')`, path); err != nil {
+		t.Fatal(err)
+	}
+	read := func() map[string]any { return a.ConversationState().(map[string]any) }
+	state := read()
+	for _, v := range state["bindings"].([]any) {
+		b := v.(map[string]any)
+		want := "私聊 · 我"
+		if b["chat_type"] == "group" {
+			want = "测试群 · 群聊 · 我"
+		}
+		if b["display_name"] != want || b["source"] != nil {
+			t.Fatal(b)
+		}
+	}
+	for _, v := range state["conversations"].([]any) {
+		c := v.(map[string]string)
+		if c["thread"] == "T1" && (c["title"] != "用户改过的标题" || c["latest_query"] != "Desktop 最新提问") {
+			t.Fatal(c)
+		}
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = file.WriteString(user("更新后的另一个问题"))
+	file.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`UPDATE threads SET name='新标题' WHERE id='T1'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range read()["conversations"].([]any) {
+		c := v.(map[string]string)
+		if c["thread"] == "T1" && (c["title"] != "新标题" || c["latest_query"] != "更新后的另一个问题") {
+			t.Fatal("stale display", c)
+		}
+	}
+	if err := os.Remove(filepath.Join(root, "state_5.sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := read()["error"]; ok {
+		t.Fatal("missing metadata blocked management")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.starts != 0 {
+		t.Fatal("display submitted a turn")
+	}
 }

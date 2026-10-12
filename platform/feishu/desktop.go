@@ -8,10 +8,46 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/chenhg5/cc-connect/core"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
+
+type cachedChatName struct {
+	name       string
+	nextLookup time.Time
+}
+
+func (p *Platform) ConversationChatName(ctx context.Context, origin core.ConversationOrigin) (string, error) {
+	if !p.AcceptConversationOrigin(origin) {
+		return "", fmt.Errorf("feishu: invalid conversation origin")
+	}
+	if origin.ChatType != "group" {
+		return "", nil
+	}
+	p.chatNamesMu.Lock()
+	defer p.chatNamesMu.Unlock()
+	if p.chatNames == nil {
+		p.chatNames = make(map[string]cachedChatName)
+	}
+	entry := p.chatNames[origin.ChatID]
+	if time.Now().Before(entry.nextLookup) {
+		return entry.name, nil
+	}
+	resp, err := p.client.Im.V1.Chat.Get(ctx, larkim.NewGetChatReqBuilder().ChatId(origin.ChatID).Build())
+	entry.nextLookup = time.Now().Add(30 * time.Second)
+	if err == nil && resp.Success() && resp.Data != nil && strings.TrimSpace(stringValue(resp.Data.Name)) != "" {
+		entry.name = stringValue(resp.Data.Name)
+		entry.nextLookup = time.Now().Add(5 * time.Minute)
+		p.chatNames[origin.ChatID] = entry
+		return entry.name, nil
+	}
+	// Keep a previously known label during a transient API failure. No raw SDK
+	// error or payload reaches the page, and the 3s page poll does not spam Feishu.
+	p.chatNames[origin.ChatID] = entry
+	return entry.name, fmt.Errorf("feishu: chat name unavailable")
+}
 
 func explicitDesktopScope(scope string) bool {
 	for _, id := range strings.Split(scope, ",") {

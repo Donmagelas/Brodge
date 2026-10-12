@@ -14,7 +14,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/chenhg5/cc-connect/core"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
@@ -431,5 +433,63 @@ func TestOfficialSDKQuotedAttachmentChecksSourceAndDownloadsParent(t *testing.T)
 	message["msg_type"] = "interactive"
 	if media, err = p.ResolveConversationMedia(context.Background(), o); err != nil || len(media) != 0 {
 		t.Fatal("ordinary question reply treated as media", err)
+	}
+}
+
+func TestConversationChatNameUsesVerifiedOriginAndCachesOfficialMetadata(t *testing.T) {
+	var requests atomic.Int32
+	var fail atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
+			fmt.Fprint(w, `{"code":0,"tenant_access_token":"local-token","expire":7200}`)
+			return
+		}
+		if r.URL.Path != "/open-apis/im/v1/chats/chat" || r.Method != "GET" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(404)
+			return
+		}
+		requests.Add(1)
+		if fail.Load() {
+			fmt.Fprint(w, `{"code":99991672}`)
+			return
+		}
+		fmt.Fprint(w, `{"code":0,"data":{"name":"测试群"}}`)
+	}))
+	defer server.Close()
+	p := &Platform{desktopBound: true, desktopTenant: "tenant", appID: "name-test", allowFrom: "actor", client: lark.NewClient("name-test", "local-secret", lark.WithOpenBaseUrl(server.URL), lark.WithHttpClient(server.Client()))}
+	o := core.ConversationOrigin{AppID: "name-test", Tenant: "tenant", Actor: "actor", ChatID: "chat", ChatType: "group", MessageID: "message"}
+	for i := 0; i < 3; i++ {
+		name, err := p.ConversationChatName(context.Background(), o)
+		if err != nil || name != "测试群" {
+			t.Fatal(name, err)
+		}
+	}
+	if requests.Load() != 1 {
+		t.Fatal("page polling bypassed cache")
+	}
+	bad := o
+	bad.Actor = "other"
+	if _, err := p.ConversationChatName(context.Background(), bad); err == nil {
+		t.Fatal("foreign actor read name")
+	}
+	bad = o
+	bad.ChatType = "p2p"
+	if name, err := p.ConversationChatName(context.Background(), bad); err != nil || name != "" {
+		t.Fatal(name, err)
+	}
+	fail.Store(true)
+	p.chatNamesMu.Lock()
+	entry := p.chatNames[o.ChatID]
+	entry.nextLookup = time.Time{}
+	p.chatNames[o.ChatID] = entry
+	p.chatNamesMu.Unlock()
+	if name, err := p.ConversationChatName(context.Background(), o); err == nil || name != "测试群" {
+		t.Fatal("lost name during API failure", name, err)
+	}
+	p.ConversationChatName(context.Background(), o)
+	if requests.Load() != 2 {
+		t.Fatal("failure caused repeated lookups")
 	}
 }

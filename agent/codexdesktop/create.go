@@ -27,15 +27,23 @@ type desktopDraft interface {
 // The installed Desktop's index supplies candidates, never proof of submission.
 // Open read-only and read only IDs; exact first-turn evidence still comes from IPC.
 func desktopThreadIndex(ctx context.Context) ([]string, error) {
+	root, err := desktopStateRoot()
+	if err != nil {
+		return nil, err
+	}
+	return readDesktopThreadIndex(ctx, filepath.Join(root, "state_5.sqlite"))
+}
+
+func desktopStateRoot() (string, error) {
 	root := os.Getenv("CODEX_HOME")
 	if root == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 		root = filepath.Join(home, ".codex")
 	}
-	return readDesktopThreadIndex(ctx, filepath.Join(root, "state_5.sqlite"))
+	return root, nil
 }
 
 func readDesktopThreadIndex(ctx context.Context, path string) ([]string, error) {

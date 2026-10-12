@@ -26,6 +26,7 @@ func (a *setupBindingAgent) HandleConversation(context.Context, core.Platform, *
 func (a *setupBindingAgent) ResumeConversations(context.Context, []core.Platform) error { return nil }
 func (a *setupBindingAgent) ConversationState() any                                     { return nil }
 func (a *setupBindingAgent) BindConversation(context.Context, string, string) error     { return nil }
+func (a *setupBindingAgent) UnbindConversation(context.Context, string, string) error   { return nil }
 func (a *setupBindingAgent) ListSessions(context.Context) ([]core.AgentSessionInfo, error) {
 	return a.threads, nil
 }

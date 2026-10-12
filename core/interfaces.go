@@ -25,6 +25,7 @@ type BoundConversationAgent interface {
 	ResumeConversations(context.Context, []Platform) error
 	ConversationState() any
 	BindConversation(context.Context, string, string) error
+	UnbindConversation(context.Context, string, string) error
 }
 type LocalPlatformSetup interface {
 	State() any
@@ -51,6 +52,11 @@ type DurableConversationPlatform interface {
 }
 type DurableIngressPlatform interface {
 	SetConversationHandler(func(context.Context, Platform, *Message) error)
+}
+
+// ConversationChatNamer supplies display metadata, never routing identities.
+type ConversationChatNamer interface {
+	ConversationChatName(context.Context, ConversationOrigin) (string, error)
 }
 type DeliveryError struct{ Code int }
 
