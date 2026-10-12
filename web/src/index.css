@@ -3,12 +3,24 @@
 @tailwind utilities;
 
 :root {
+  color-scheme: light;
   --color-accent: 22 163 74;
   --color-accent-dim: 21 128 61;
 }
 .dark {
+  color-scheme: dark;
   --color-accent: 66 255 156;
   --color-accent-dim: 43 200 122;
+}
+
+/* Native popup options need an opaque background as well as the themed text. */
+select option {
+  color: #111827;
+  background-color: #ffffff;
+}
+.dark select option {
+  color: #f3f4f6;
+  background-color: #111827;
 }
 
 body {

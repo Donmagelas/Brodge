@@ -67,7 +67,7 @@ export default function DesktopConversation({ name }: { name: string }) {
     <Card><h3 className="font-semibold mb-3">{t('desktop.title')}</h3><p className="text-sm text-gray-500 mb-4">{t('desktop.hint')}</p>
       <Input placeholder="codex://threads/..." label={t('desktop.thread')} value={thread} onChange={e => setThread(e.target.value)} />
       <label className="block text-sm mt-3">{t('desktop.chat')}
-        <select value={key} onChange={e => setKey(e.target.value)} className="block w-full border rounded p-2 bg-transparent">
+        <select value={key} onChange={e => setKey(e.target.value)} className="block w-full border border-gray-300 rounded p-2 bg-white text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100">
           <option value="">{t('desktop.select')}</option>
           {state?.bindings.map(b => <option key={b.session_key} value={b.session_key}>{b.display_name}</option>)}
         </select>
