@@ -2521,6 +2521,85 @@ func TestCUJ_UnbindScopedRelationshipSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestCUJ_ConversationStatusKeepsOriginAndThreadHistory(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	accept(t, a, p, incoming("A", "unbound", "creation", "创建一个会话"))
+	step(t, a) // The unavailable UI leaves a recoverable creation failure.
+	accept(t, a, p, incoming("A", "DM", "bind-dm", "/bind T1"))
+	group := incoming("A", "group", "bind-group", "/bind T1")
+	group.ConversationOrigin.ChatType = "group"
+	accept(t, a, p, group)
+	finish := func(chat, id, thread string) string {
+		t.Helper()
+		msg := incoming("A", chat, id, "测试消息")
+		if chat == "group" {
+			msg.ConversationOrigin.ChatType = "group"
+		}
+		accept(t, a, p, msg)
+		step(t, a)
+		f.finish(thread, "完成", false)
+		step(t, a)
+		step(t, a)
+		var jobID string
+		if err := a.store.db.QueryRow(`SELECT id FROM jobs WHERE source=?`, marshal(msg.ConversationOrigin)).Scan(&jobID); err != nil {
+			t.Fatal(err)
+		}
+		return jobID
+	}
+	finish("DM", "dm-old", "T1")
+	finish("group", "group-old", "T1")
+	accept(t, a, p, incoming("A", "DM", "switch", "/bind T2"))
+	var recentIDs []string
+	for i := 0; i < 32; i++ {
+		recentIDs = append(recentIDs, finish("DM", fmt.Sprintf("recent-%02d", i), "T2"))
+	}
+	dmKey := originKey(*incoming("A", "DM", "", "").ConversationOrigin)
+	groupKey := originKey(*incoming("A", "group", "", "").ConversationOrigin)
+	unboundKey := originKey(*incoming("A", "unbound", "", "").ConversationOrigin)
+	check := func() {
+		t.Helper()
+		state := a.ConversationState().(map[string]any)
+		if state["error"] != nil {
+			t.Fatal(state["error"])
+		}
+		groups := map[[2]string][]map[string]string{}
+		for _, v := range state["messages"].([]any) {
+			m := v.(map[string]string)
+			key := [2]string{m["session_key"], m["thread"]}
+			groups[key] = append(groups[key], m)
+		}
+		if len(groups) != 4 || len(groups[[2]string{dmKey, "T1"}]) != 1 || len(groups[[2]string{groupKey, "T1"}]) != 1 {
+			t.Fatal("old conversation history lost or chat origins mixed", groups)
+		}
+		recent := groups[[2]string{dmKey, "T2"}]
+		if len(recent) != 30 || recent[0]["id"] != recentIDs[31] || recent[29]["id"] != recentIDs[2] {
+			t.Fatal("recent history is not limited and ordered within the conversation", recent)
+		}
+		creation := groups[[2]string{unboundKey, ""}]
+		if len(creation) != 1 || creation[0]["state"] != "create_failed" || creation[0]["error"] == "" {
+			t.Fatal("creation recovery lost its source or failure", creation)
+		}
+	}
+	check()
+	path := filepath.Join(a.dataDir, "bridge.sqlite")
+	if err := a.store.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	a.store, err = openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.starts != 34 {
+		t.Fatal("reading status changed Desktop turns", f.starts)
+	}
+}
+
 type namedPlatform struct{ *fakePlatform }
 
 func (p *namedPlatform) ConversationChatName(context.Context, core.ConversationOrigin) (string, error) {

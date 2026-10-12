@@ -426,10 +426,13 @@ func (a *Agent) ConversationState() any {
 		err := rows.Scan(&key, &thread)
 		return map[string]string{"session_key": key, "thread": thread}, err
 	})
-	query("messages", `SELECT id,thread,state,error FROM jobs WHERE state LIKE 'create_%' OR rowid IN (SELECT rowid FROM jobs ORDER BY rowid DESC LIMIT 30) ORDER BY rowid DESC`, func(rows *sql.Rows) (any, error) {
-		var id, thread, state, e string
-		err := rows.Scan(&id, &thread, &state, &e)
-		return map[string]string{"id": id, "thread": thread, "state": state, "error": e}, err
+	query("messages", `SELECT id,origin,thread,state,error FROM (
+SELECT id,origin,thread,state,error,rowid AS position,
+ROW_NUMBER() OVER (PARTITION BY origin,thread ORDER BY rowid DESC) AS recent FROM jobs
+) WHERE state LIKE 'create_%' OR recent<=30 ORDER BY position DESC`, func(rows *sql.Rows) (any, error) {
+		var id, key, thread, state, e string
+		err := rows.Scan(&id, &key, &thread, &state, &e)
+		return map[string]string{"id": id, "session_key": key, "thread": thread, "state": state, "error": e}, err
 	})
 	query("outbox", `SELECT id,state FROM outbox WHERE state!='sent' ORDER BY rowid LIMIT 50`, func(rows *sql.Rows) (any, error) {
 		var id, state string
