@@ -426,13 +426,21 @@ func (a *Agent) ConversationState() any {
 		err := rows.Scan(&key, &thread)
 		return map[string]string{"session_key": key, "thread": thread}, err
 	})
-	query("messages", `SELECT id,origin,thread,state,error FROM (
-SELECT id,origin,thread,state,error,rowid AS position,
+	query("messages", `SELECT id,origin,thread,state,error,prompt,media,
+(SELECT CASE WHEN COUNT(*)=0 THEN 'none'
+WHEN SUM(state IN ('blocked','skipped'))>0 THEN 'blocked'
+WHEN SUM(state IN ('uncertain','reconcile'))>0 THEN 'uncertain'
+WHEN SUM(state='sending')>0 THEN 'sending'
+WHEN SUM(state='sent')=COUNT(*) THEN 'sent' ELSE 'pending' END
+FROM outbox WHERE job=recent_jobs.id AND (kind='result' OR kind LIKE 'result:%' OR kind LIKE 'media:%'))
+FROM (
+SELECT id,origin,thread,state,error,prompt,media,rowid AS position,
 ROW_NUMBER() OVER (PARTITION BY origin,thread ORDER BY rowid DESC) AS recent FROM jobs
-) WHERE state LIKE 'create_%' OR recent<=30 ORDER BY position DESC`, func(rows *sql.Rows) (any, error) {
-		var id, key, thread, state, e string
-		err := rows.Scan(&id, &key, &thread, &state, &e)
-		return map[string]string{"id": id, "session_key": key, "thread": thread, "state": state, "error": e}, err
+) AS recent_jobs WHERE state LIKE 'create_%' OR recent<=30 ORDER BY position DESC`, func(rows *sql.Rows) (any, error) {
+		var id, key, thread, state, e, prompt, media, delivery string
+		err := rows.Scan(&id, &key, &thread, &state, &e, &prompt, &media, &delivery)
+		return map[string]string{"id": id, "session_key": key, "thread": thread, "state": state, "error": e,
+			"preview": messagePreview(prompt, media), "delivery_state": delivery}, err
 	})
 	query("outbox", `SELECT id,state FROM outbox WHERE state!='sent' ORDER BY rowid LIMIT 50`, func(rows *sql.Rows) (any, error) {
 		var id, state string

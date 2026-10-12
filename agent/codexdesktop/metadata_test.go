@@ -7,7 +7,28 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
+
+func TestMessagePreviewTextAndMedia(t *testing.T) {
+	for _, tc := range []struct{ prompt, media, want string }{
+		{"\n你好\t世界", "[]", "你好 世界"},
+		{"", `[{"kind":"image","key":"private-key","path":"/private/cache/image.png"}]`, "[图片]"},
+		{"", `[{"kind":"file","name":"/private/cache/计划.pdf","path":"/private/cache/file","key":"private-key"}]`, "[附件：计划.pdf]"},
+		{"", `[{"kind":"file"}]`, "[附件]"},
+		{"", "[]", "（无文字消息）"},
+		{"仍显示原消息", "invalid-json", "仍显示原消息"},
+		{"# Files mentioned by the user:\n/private/cache/report\n## My request:\n看一下报告", "[]", "看一下报告"},
+	} {
+		if got := messagePreview(tc.prompt, tc.media); got != tc.want {
+			t.Fatalf("preview %q, want %q", got, tc.want)
+		}
+	}
+	got := messagePreview(strings.Repeat("中文😀", 100), "[]")
+	if !utf8.ValidString(got) || len([]rune(got)) != 161 || !strings.HasSuffix(got, "…") {
+		t.Fatal("invalid or unbounded Unicode preview", got)
+	}
+}
 
 func TestDisplayMetadataFallsBackWithoutReadingUnrelatedFiles(t *testing.T) {
 	root := t.TempDir()

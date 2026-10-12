@@ -252,6 +252,32 @@ func rolloutUserText(line []byte) string {
 	return text
 }
 
+// Preview the persisted incoming message, not the conversation's latest query.
+// Media paths/keys stay private; media-only messages still have a useful label.
+func messagePreview(prompt, rawMedia string) string {
+	var media []core.ConversationMedia
+	var labels []string
+	if json.Unmarshal([]byte(rawMedia), &media) == nil {
+		for _, m := range media {
+			if m.Kind == "image" {
+				labels = append(labels, "[图片]")
+			} else {
+				name := previewText(filepath.Base(strings.ReplaceAll(m.Name, "\\", "/")), 60)
+				if name == "" || name == "." || name == "/" {
+					labels = append(labels, "[附件]")
+				} else {
+					labels = append(labels, "[附件："+name+"]")
+				}
+			}
+		}
+	}
+	text := previewText(strings.Join(labels, " ")+" "+previewText(prompt, 160), 160)
+	if text == "" {
+		return "（无文字消息）"
+	}
+	return text
+}
+
 func previewText(text string, limit int) string {
 	// Native first-message wrappers contain paths before the user's request.
 	if strings.HasPrefix(text, "# Files mentioned by the user:") {

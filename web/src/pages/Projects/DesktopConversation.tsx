@@ -14,7 +14,7 @@ type State = {
   accessibility_granted: boolean;
   conversations: Conversation[];
   bindings: Binding[];
-  messages: { id: string; session_key: string; thread: string; title: string; state: string; error: string }[];
+  messages: { id: string; session_key: string; thread: string; title: string; state: string; error: string; preview: string; delivery_state: string }[];
   outbox: { id: string; state: string }[];
 };
 export default function DesktopConversation({ name, feishuConnectionStatus }: { name: string; feishuConnectionStatus: FeishuConnectionStatus }) {
@@ -75,13 +75,24 @@ export default function DesktopConversation({ name, feishuConnectionStatus }: { 
     finally { inspectingRef.current = false; setInspecting(false); }
   };
   const creationLabels: Record<string, string> = { create_pending: '等待新建会话', create_preparing: '准备新会话', create_sending: '正在发送首条消息', create_verifying: '正在核对新会话', create_uncertain: '首次发送待确认', create_failed: '新建未发送' };
+  const messageStatus = (m: State['messages'][number]) => {
+    if (creationLabels[m.state]) return creationLabels[m.state];
+    if (m.state === 'finished') {
+      const delivery: Record<string, string> = { pending: '待发送', sending: '发送中', sent: '已发送', uncertain: '发送结果待确认', blocked: '发送失败', none: '发送状态未知' };
+      return `${m.error ? '处理未完成 · 提示' : '回复'}${delivery[m.delivery_state] || '发送状态未知'}`;
+    }
+    const progress: Record<string, string> = { queued: '等待发送给 Codex', claimed: '准备发送给 Codex', dispatch: '正在发送给 Codex', running: '已发送给 Codex · 处理中', waiting: '已发送给 Codex · 等待回答', uncertain: '正在核对 Codex 接收状态', blocked: '处理受阻' };
+    return progress[m.state] || '状态待确认';
+  };
   const boundChats = state?.bindings.filter(b => state.conversations.some(c => c.session_key === b.session_key)) ?? [];
   const newMessages = state?.messages.filter(m => m.state.startsWith('create_') && !state.conversations.some(c => c.session_key === m.session_key && c.thread === m.thread)) ?? [];
   const renderMessages = (messages: State['messages'], showChat = false) => messages.length === 0
     ? <p className="text-sm text-gray-500 mt-2">尚未收到消息</p>
     : messages.map(m => <div className="text-sm py-2 break-words border-b last:border-b-0 border-gray-200 dark:border-white/10" key={m.id}>
       {showChat && <p className="font-medium">{state?.bindings.find(b => b.session_key === m.session_key)?.display_name || '新会话'}</p>}
-      <p>{creationLabels[m.state] || t(`desktop.${m.state}`, m.state)}{m.error && ` · ${m.error}`}</p>
+      <p className="text-gray-900 dark:text-gray-100 line-clamp-2" title={m.preview}>{m.preview || '（无文字消息）'}</p>
+      <p className={`text-xs mt-1 ${m.error || m.delivery_state === 'blocked' ? 'text-red-600 dark:text-red-400' : m.state === 'finished' && m.delivery_state === 'sent' ? 'text-emerald-700 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-300'}`}>{messageStatus(m)}</p>
+      {m.error && <details className="text-xs mt-1"><summary className="cursor-pointer">异常详情</summary><p className="mt-1 break-all">{m.error}</p></details>}
       {m.state === 'create_failed' && <Button className="mt-2" disabled={recovering[m.id]} onClick={() => recover(m.id)}>{recovering[m.id] ? '正在准备，请稍候…' : '重试创建（原消息尚未发送）'}</Button>}
       {m.state === 'create_failed' && m.error.startsWith('desktop-composer-lookup') && <div className="mt-2">
         <Button variant="secondary" disabled={inspecting || Object.values(recovering).some(Boolean)} onClick={() => inspectComposer(m.id)}>{inspecting ? '正在检查…' : '检查输入框（不发送）'}</Button>

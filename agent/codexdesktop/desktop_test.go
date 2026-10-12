@@ -1023,6 +1023,10 @@ func TestCUJ_TerminalFailureAndDeliveryRetryNeverRepeatModel(t *testing.T) {
 			f.mu.Unlock()
 			p.failure = fmt.Errorf("lost delivery response")
 			step(t, a)
+			entry := a.ConversationState().(map[string]any)["messages"].([]any)[0].(map[string]string)
+			if entry["state"] != "finished" || entry["error"] == "" || entry["delivery_state"] != "uncertain" || entry["preview"] != "run once" {
+				t.Fatal("terminal failure or uncertain delivery hidden", entry)
+			}
 			if err := a.store.recover(); err != nil {
 				t.Fatal(err)
 			}
@@ -1036,6 +1040,10 @@ func TestCUJ_TerminalFailureAndDeliveryRetryNeverRepeatModel(t *testing.T) {
 			step(t, a)
 			if count(t, a.store, `SELECT count(*) FROM jobs WHERE state='finished' AND error!=''`) != 1 || len(p.sent) != 2 || p.sent[0].uuid != p.sent[1].uuid || p.sent[0].text != p.sent[1].text || !strings.Contains(p.sent[1].text, "返回错误") || count(t, a.store, `SELECT count(*) FROM outbox WHERE kind LIKE 'media:%'`) != 0 {
 				t.Fatal("failure or stable retry identity lost")
+			}
+			entry = a.ConversationState().(map[string]any)["messages"].([]any)[0].(map[string]string)
+			if entry["error"] == "" || entry["delivery_state"] != "sent" {
+				t.Fatal("delivering failure notice erased model failure", entry)
 			}
 			f.mu.Lock()
 			starts := f.starts
@@ -2533,7 +2541,7 @@ func TestCUJ_ConversationStatusKeepsOriginAndThreadHistory(t *testing.T) {
 	accept(t, a, p, group)
 	finish := func(chat, id, thread string) string {
 		t.Helper()
-		msg := incoming("A", chat, id, "测试消息")
+		msg := incoming("A", chat, id, "测试消息 "+id)
 		if chat == "group" {
 			msg.ConversationOrigin.ChatType = "group"
 		}
@@ -2577,8 +2585,19 @@ func TestCUJ_ConversationStatusKeepsOriginAndThreadHistory(t *testing.T) {
 		if len(recent) != 30 || recent[0]["id"] != recentIDs[31] || recent[29]["id"] != recentIDs[2] {
 			t.Fatal("recent history is not limited and ordered within the conversation", recent)
 		}
+		if recent[0]["preview"] != "测试消息 recent-31" || recent[29]["preview"] != "测试消息 recent-02" ||
+			groups[[2]string{dmKey, "T1"}][0]["preview"] != "测试消息 dm-old" || groups[[2]string{groupKey, "T1"}][0]["preview"] != "测试消息 group-old" {
+			t.Fatal("message preview borrowed another message or conversation", groups)
+		}
+		for _, messages := range groups {
+			for _, m := range messages {
+				if m["state"] == "finished" && m["delivery_state"] != "sent" {
+					t.Fatal("delivered reply status missing", m)
+				}
+			}
+		}
 		creation := groups[[2]string{unboundKey, ""}]
-		if len(creation) != 1 || creation[0]["state"] != "create_failed" || creation[0]["error"] == "" {
+		if len(creation) != 1 || creation[0]["state"] != "create_failed" || creation[0]["error"] == "" || creation[0]["preview"] != "创建一个会话" || creation[0]["delivery_state"] != "none" {
 			t.Fatal("creation recovery lost its source or failure", creation)
 		}
 	}
@@ -2597,6 +2616,105 @@ func TestCUJ_ConversationStatusKeepsOriginAndThreadHistory(t *testing.T) {
 	defer f.mu.Unlock()
 	if f.starts != 34 {
 		t.Fatal("reading status changed Desktop turns", f.starts)
+	}
+}
+
+func TestCUJ_MessagePreviewTracksCompleteReplyDelivery(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &mediaPlatform{data: []byte("attachment bytes")}
+	ctx := context.Background()
+	m := incoming("A", "DM", "preview", "检查这两个附件\n并回复")
+	m.Media = []core.ConversationMedia{{Kind: "image", Key: "image", Name: "图片.png"}, {Kind: "file", Key: "file", Name: "../报告.txt"}}
+	if err := a.store.bind(originKey(*m.ConversationOrigin), "T1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.HandleConversation(ctx, p, m); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.consumeInbox(ctx); err != nil {
+		t.Fatal(err)
+	}
+	message := func(state, delivery string) map[string]string {
+		t.Helper()
+		s := a.ConversationState().(map[string]any)
+		if s["error"] != nil {
+			t.Fatal(s["error"])
+		}
+		entries := s["messages"].([]any)
+		if len(entries) != 1 {
+			t.Fatal("unexpected messages", entries)
+		}
+		entry := entries[0].(map[string]string)
+		if entry["preview"] != "[图片] [附件：报告.txt] 检查这两个附件 并回复" || entry["state"] != state || entry["delivery_state"] != delivery {
+			t.Fatal("incorrect preview or delivery progress", entry)
+		}
+		return entry
+	}
+	message("queued", "none")
+	step(t, a)
+	message("running", "none")
+	j, err := scanJob(a.store.db.QueryRow(`SELECT ` + jobCols + ` FROM jobs`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _, err := a.snapshotMedia(p.data, "结果.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.finish("T1", "第一段\n[结果]("+path+")\n最后一段", false)
+	if err := a.monitor(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	message("finished", "pending") // Model completion is not reply delivery.
+	flush := func() {
+		t.Helper()
+		if err := a.flushOutbox(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flush() // First text is delivered; the attachment and remaining text are not.
+	message("finished", "pending")
+	p.failUpload = true
+	flush()
+	message("finished", "pending")
+	if len(p.media) != 0 {
+		t.Fatal("failed upload marked delivered")
+	}
+	p.failUpload = false
+	p.failure = fmt.Errorf("lost receipt")
+	if _, err = a.store.db.Exec(`UPDATE outbox SET next_attempt=0`); err != nil {
+		t.Fatal(err)
+	}
+	flush()
+	message("finished", "uncertain")
+	// The display derives from persisted rows after reopening, not a UI cache.
+	storePath := filepath.Join(a.dataDir, "bridge.sqlite")
+	if err = a.store.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	a.store, err = openStore(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message("finished", "uncertain")
+	p.failure = nil
+	if _, err = a.store.db.Exec(`UPDATE outbox SET next_attempt=0`); err != nil {
+		t.Fatal(err)
+	}
+	flush() // Attachment receipt confirmed, but the final text is still queued.
+	message("finished", "pending")
+	flush()
+	message("finished", "sent")
+	// A denied transmission remains visible even when other parts were sent.
+	if _, err = a.store.db.Exec(`UPDATE outbox SET state='blocked' WHERE kind LIKE 'media:%'`); err != nil {
+		t.Fatal(err)
+	}
+	message("finished", "blocked")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.starts != 1 {
+		t.Fatal("reading status repeated a model turn", f.starts)
 	}
 }
 
