@@ -62,6 +62,7 @@ export default function DesktopConversation({ name }: { name: string }) {
     finally { recoveringRef.current.delete(id); setRecovering(v => ({ ...v, [id]: false })); }
   };
   const creationLabels: Record<string, string> = { create_pending: '等待新建会话', create_preparing: '准备新会话', create_sending: '正在发送首条消息', create_verifying: '正在核对新会话', create_uncertain: '首次发送待确认', create_failed: '新建未发送' };
+  const boundChats = state?.bindings.filter(b => state.conversations.some(c => c.session_key === b.session_key)) ?? [];
   return <div className="space-y-4 text-gray-900 dark:text-gray-100">
     <DesktopFeishuSetup name={name} />
     <Card><h3 className="font-semibold mb-3">{t('desktop.title')}</h3><p className="text-sm text-gray-500 mb-4">{t('desktop.hint')}</p>
@@ -79,8 +80,8 @@ export default function DesktopConversation({ name }: { name: string }) {
     </Card>
     <Card>
       <h3 className="font-semibold mb-3">{t('desktop.bindings')}</h3>
-      {state?.bindings.length === 0 && <p className="text-sm text-gray-500">尚未绑定会话</p>}
-      {state?.bindings.map(b => {
+      {state && boundChats.length === 0 && <p className="text-sm text-gray-500">尚未绑定会话</p>}
+      {state && boundChats.map(b => {
         const conversations = state.conversations.filter(c => c.session_key === b.session_key);
         return <section key={b.session_key} className="py-4 border-b last:border-b-0 border-gray-200 dark:border-white/10">
           <h4 className="font-medium text-sm break-words">{b.display_name}</h4>
