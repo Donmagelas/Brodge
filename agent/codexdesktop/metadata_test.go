@@ -62,6 +62,22 @@ func TestDisplayMetadataFallsBackWithoutReadingUnrelatedFiles(t *testing.T) {
 	if historyPath(root, link) {
 		t.Fatal("followed history symlink outside Desktop")
 	}
+	// Title-only commands must not parse rollout content, even for a valid path.
+	valid := filepath.Join(root, "sessions", "thread.jsonl")
+	if err := os.WriteFile(valid, []byte(`{"type":"event_msg","payload":{"type":"user_message","message":"recent question"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE threads SET rollout_path=? WHERE id='T1'`, valid); err != nil {
+		t.Fatal(err)
+	}
+	m = readDesktopMetadata(context.Background(), root, []string{"T1"}, nil)
+	if m["T1"].title != "核对这份 PDF" || m["T1"].query != "" {
+		t.Fatal("title-only lookup read conversation history", m)
+	}
+	m = readDesktopMetadata(context.Background(), root, []string{"T1"}, map[string]queryPreview{})
+	if m["T1"].query != "recent question" {
+		t.Fatal("Web query preview was lost", m)
+	}
 }
 
 func TestLatestQueryPreviewParsesUserMessagesOnly(t *testing.T) {

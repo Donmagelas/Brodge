@@ -116,7 +116,7 @@ func (a *Agent) consumeInbox(ctx context.Context) error {
 				if err = tx.QueryRow(`SELECT thread,revision FROM bindings WHERE origin=?`, key).Scan(&acceptedThread, &acceptedRevision); err != nil {
 					return err
 				}
-				err = reply(a.i18n.Tf(core.MsgDesktopBound, validatedThread))
+				err = reply(a.i18n.Tf(core.MsgDesktopBound, a.commandThreadTitles(ctx, validatedThread)[validatedThread]))
 			}
 		}
 	case "/list":
@@ -132,9 +132,6 @@ func (a *Agent) consumeInbox(ctx context.Context) error {
 				return e
 			}
 			ids = append(ids, id)
-			if id == thread {
-				ids[len(ids)-1] = "* " + id
-			}
 		}
 		e = rows.Err()
 		rows.Close()
@@ -144,13 +141,26 @@ func (a *Agent) consumeInbox(ctx context.Context) error {
 		if len(ids) == 0 {
 			err = reply(a.i18n.T(core.MsgDesktopUnbound))
 		} else {
-			err = reply(a.i18n.Tf(core.MsgDesktopList, strings.Join(ids, "\n")) + "\n" + a.i18n.Tf(core.MsgDesktopCurrent, thread))
+			titles := a.commandThreadTitles(ctx, ids...)
+			entries := make([]string, 0, len(ids))
+			for _, id := range ids {
+				label := titles[id]
+				if id == thread {
+					label = "▶ " + label
+				}
+				entries = append(entries, label+"\n/switch "+id)
+			}
+			current := a.i18n.T(core.MsgDesktopUnbound)
+			if bindingErr == nil {
+				current = a.i18n.Tf(core.MsgDesktopCurrent, titles[thread])
+			}
+			err = reply(a.i18n.Tf(core.MsgDesktopList, strings.Join(entries, "\n\n")) + "\n\n" + current)
 		}
 	case "/current":
 		if bindingErr == sql.ErrNoRows {
 			err = reply(a.i18n.T(core.MsgDesktopUnbound))
 		} else {
-			err = reply(a.i18n.Tf(core.MsgDesktopCurrent, thread))
+			err = reply(a.i18n.Tf(core.MsgDesktopCurrent, a.commandThreadTitles(ctx, thread)[thread]))
 		}
 	case "/help":
 		err = reply(a.i18n.T(core.MsgDesktopHelp))

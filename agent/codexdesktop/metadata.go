@@ -22,6 +22,24 @@ type queryPreview struct {
 	text     string
 }
 
+// Commands need names only, not a scan of each conversation's message history.
+// Read the same optional Desktop metadata as Web; an unavailable name falls
+// back to the ID so the conversation remains identifiable and switchable.
+func (a *Agent) commandThreadTitles(ctx context.Context, ids ...string) map[string]string {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	metadata := readDesktopMetadata(ctx, a.metadataRoot, ids, nil)
+	titles := make(map[string]string, len(ids))
+	for _, id := range ids {
+		title := metadata[id].title
+		if title == "" {
+			title = id
+		}
+		titles[id] = title
+	}
+	return titles
+}
+
 // Labels are optional, read-only data. A missing index or failed name lookup
 // must not affect bindings or activate a Desktop conversation.
 func (a *Agent) addConversationLabels(out map[string]any) {
@@ -130,7 +148,7 @@ func readDesktopMetadata(ctx context.Context, root string, ids []string, cache m
 		m := threadMetadata{title: previewText(name, 100)}
 		// Read only the rollout referenced by this known thread, within Desktop's
 		// history directories. Never follow an arbitrary path or inspect auth files.
-		if historyPath(root, path) {
+		if cache != nil && historyPath(root, path) {
 			if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
 				old, ok := cache[path]
 				if ok && old.size == info.Size() && old.modified.Equal(info.ModTime()) {

@@ -288,11 +288,103 @@ func TestCUJ_PairBeforeBindingAndSwitchExistingChats(t *testing.T) {
 			current = r.text
 		}
 	}
-	if !strings.Contains(listReply, "T1") || !strings.Contains(listReply, "* T2") || !strings.Contains(current, "T1") {
+	if !strings.Contains(listReply, "T1") || !strings.Contains(listReply, "▶ T2") || !strings.Contains(current, "T1") {
 		t.Fatal("list or current did not track switching")
 	}
 	if count(t, a.store, `SELECT count(*) FROM binding_threads`) != 2 {
 		t.Fatal("switch discarded previous conversation")
+	}
+}
+
+func TestCUJ_CommandTitlesReflectDesktopRenameAndKeepIDSwitching(t *testing.T) {
+	f, socket := newFake(t)
+	a := testAgent(t, socket)
+	p := &fakePlatform{}
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", filepath.Join(a.metadataRoot, "state_5.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err = db.Exec(`CREATE TABLE threads(id TEXT,title TEXT,name TEXT,rollout_path TEXT);
+		INSERT INTO threads VALUES('T1','原始首条问题','需求与工单 (2)',''),('T2','回应问候',NULL,''),('T3','其他入口的会话',NULL,'')`); err != nil {
+		t.Fatal(err)
+	}
+	o := *incoming("A", "DM", "pair", "").ConversationOrigin
+	if err := a.BindPairedConversation(ctx, p, o, "T1"); err != nil {
+		t.Fatal(err)
+	}
+	command := func(id, text string) string {
+		t.Helper()
+		before := len(p.sent)
+		accept(t, a, p, incoming("A", "DM", id, text))
+		step(t, a)
+		if len(p.sent) != before+1 || p.sent[before].o.MessageID != id {
+			t.Fatal("command reply missing or delivered to another message")
+		}
+		return p.sent[before].text
+	}
+	if got := command("bind2", "/bind T2"); got != "已绑定 Codex 会话：回应问候" {
+		t.Fatal(got)
+	}
+	firstList := command("list", "/list")
+	for _, want := range []string{"需求与工单 (2)\n/switch T1", "▶ 回应问候\n/switch T2", "当前 Codex 会话：回应问候"} {
+		if !strings.Contains(firstList, want) {
+			t.Fatalf("list missing %q: %s", want, firstList)
+		}
+	}
+	if strings.Contains(firstList, "T3") || strings.Contains(firstList, "其他入口") || strings.Contains(firstList, "原始首条问题") {
+		t.Fatal("unlinked conversation or stale title leaked")
+	}
+	if strings.Contains(firstList, "`") {
+		t.Fatal("literal Markdown punctuation would be copied into switch commands")
+	}
+	if got := command("current", "/current"); got != "当前 Codex 会话：回应问候" {
+		t.Fatal(got)
+	}
+	if got := command("switch1", "/switch T1"); got != "已绑定 Codex 会话：需求与工单 (2)" {
+		t.Fatal(got)
+	}
+	// A fresh name is read for new commands; a retry keeps its persisted reply.
+	if _, err := db.Exec(`UPDATE threads SET name='同名的新标题' WHERE id IN ('T1','T2')`); err != nil {
+		t.Fatal(err)
+	}
+	if got := command("renamed", "/current"); got != "当前 Codex 会话：同名的新标题" {
+		t.Fatal(got)
+	}
+	duplicateList := command("same-names", "/list")
+	if !strings.Contains(duplicateList, "▶ 同名的新标题\n/switch T1") || !strings.Contains(duplicateList, "同名的新标题\n/switch T2") {
+		t.Fatal("duplicate titles lost their distinct switch commands")
+	}
+	command("switch2", "/switch T2")
+	if count(t, a.store, `SELECT count(*) FROM bindings WHERE origin=? AND thread='T2'`, originKey(o)) != 1 {
+		t.Fatal("duplicate title changed switch target")
+	}
+	var persisted string
+	if err := a.store.db.QueryRow(`SELECT body FROM outbox WHERE job='ingress:app:tenant:list' AND kind='reply'`).Scan(&persisted); err != nil || persisted != firstList {
+		t.Fatal("renaming rewrote an already queued reply", err)
+	}
+	before := len(p.sent)
+	accept(t, a, p, incoming("A", "DM", "list", "/list"))
+	step(t, a)
+	if len(p.sent) != before {
+		t.Fatal("duplicate command delivered another reply")
+	}
+	a.metadataRoot = t.TempDir()
+	if got := command("missing-index", "/current"); got != "当前 Codex 会话：T2" {
+		t.Fatal("missing title prevented identification", got)
+	}
+	if err := a.UnbindConversation(ctx, originKey(o), "T2"); err != nil {
+		t.Fatal(err)
+	}
+	got := command("no-current", "/list")
+	if !strings.Contains(got, "/switch T1") || !strings.Contains(got, "尚未绑定") || strings.Contains(got, "当前 Codex 会话：") {
+		t.Fatal("unbound list invented a current conversation", got)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.starts != 0 || count(t, a.store, `SELECT count(*) FROM jobs`) != 0 {
+		t.Fatal("displaying or switching titles submitted a model turn")
 	}
 }
 

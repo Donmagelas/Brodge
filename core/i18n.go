@@ -234,11 +234,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Conversación de Codex vinculada: %s",
 	},
 	MsgDesktopList: {
-		LangChinese:            "本入口已关联的 Desktop 会话：\n%s\n用 /switch 会话ID 切换。",
-		LangEnglish:            "Conversations linked to this chat:\n%s\nUse /switch ID to switch.",
-		LangTraditionalChinese: "已授權的 Desktop 會話：\n%s\n用 /switch 會話ID 切換。",
-		LangJapanese:           "許可された Desktop の会話：\n%s\n/switch ID で切り替えます。",
-		LangSpanish:            "Conversaciones autorizadas de Desktop:\n%s\nUse /switch ID para cambiar.",
+		LangChinese:            "本聊天关联的 Codex 会话：\n%s\n\n复制对应的 /switch 命令发送即可切换。",
+		LangEnglish:            "Codex conversations linked to this chat:\n%s\n\nCopy and send the corresponding /switch command to switch.",
+		LangTraditionalChinese: "本聊天關聯的 Codex 會話：\n%s\n\n複製並傳送對應的 /switch 指令即可切換。",
+		LangJapanese:           "このチャットに関連付けた Codex の会話：\n%s\n\n該当する /switch コマンドをコピーして送信すると切り替えられます。",
+		LangSpanish:            "Conversaciones de Codex vinculadas a este chat:\n%s\n\nCopie y envíe el comando /switch correspondiente para cambiar.",
 	},
 	MsgDesktopUnbound: {
 		LangChinese:            "尚未绑定。用 /bind codex://threads/会话ID 绑定已有会话。",
