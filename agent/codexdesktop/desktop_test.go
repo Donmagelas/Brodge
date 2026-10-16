@@ -1,9 +1,12 @@
 package codexdesktop
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -90,7 +93,10 @@ func (f *fakeDesktop) serve(c net.Conn) {
 		case "thread-owner-discovery":
 			if f.states[thread] == nil {
 				f.mu.Unlock()
-				return
+				// The Desktop router omits method/handler when no owner exists.
+				b, _ := encodeFrame(wire{"type": "response", "requestId": m["requestId"], "resultType": "error", "error": "no-client-found"})
+				_, _ = c.Write(b)
+				continue
 			}
 		case "thread-follower-load-complete-history":
 			state := f.states[thread]
@@ -98,7 +104,12 @@ func (f *fakeDesktop) serve(c net.Conn) {
 			var snapshot wire
 			_ = json.Unmarshal(b, &snapshot)
 			broadcast := wire{"type": "broadcast", "method": "thread-stream-state-changed", "version": f.version, "sourceClientId": owner, "targetClientIds": []string{"test-client"}, "params": wire{"conversationId": thread, "hostId": "local", "change": wire{"type": "snapshot", "revision": 1, "conversationState": snapshot}}}
-			encoded, _ := encodeFrame(broadcast)
+			// Desktop's inbound history limit is larger than Brodge's outbound
+			// prompt limit. Encode independently so large-history tests exercise it.
+			payload, _ := json.Marshal(broadcast)
+			encoded := make([]byte, 4+len(payload))
+			binary.LittleEndian.PutUint32(encoded, uint32(len(payload)))
+			copy(encoded[4:], payload)
 			_, _ = c.Write(encoded)
 			result = wire{"revision": 1}
 		case "thread-follower-start-turn":
@@ -1179,6 +1190,122 @@ func TestSocketPermissionsAndFraming(t *testing.T) {
 	_, err = readFrame(strings.NewReader("\x01\x00"))
 	if err != io.ErrUnexpectedEOF {
 		t.Fatal(err)
+	}
+}
+
+func TestIPCFrameLimitsAndReadFailureCause(t *testing.T) {
+	if _, err := encodeFrame(wire{"text": strings.Repeat("x", maxFrame)}); err == nil {
+		t.Fatal("outbound prompt limit was raised")
+	}
+	header := make([]byte, 4)
+	binary.LittleEndian.PutUint32(header, maxIncomingFrame+1)
+	if _, err := readFrame(bytes.NewReader(header)); !errors.Is(err, errFrameTooLarge) {
+		t.Fatal("oversize incoming frame not rejected before reading its body", err)
+	}
+	for name, frame := range map[string][]byte{
+		"oversize":     header,
+		"invalid JSON": {1, 0, 0, 0, '{'},
+		"truncated":    {4, 0, 0, 0, '{'},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, server := net.Pipe()
+			c := &ipcClient{conn: client, pending: map[string]rpcWait{}, clientID: "client", timeout: time.Second}
+			defer c.abort(fmt.Errorf("test finished"))
+			go c.readLoop()
+			go func() {
+				defer server.Close()
+				if _, err := readFrame(server); err == nil {
+					_, _ = server.Write(frame)
+				}
+			}()
+			_, err := c.rpc(context.Background(), "thread-owner-discovery", wire{}, "")
+			if name == "oversize" && !errors.Is(err, errFrameTooLarge) || name == "invalid JSON" && !errors.Is(err, errInvalidEnvelope) || name == "truncated" && (err == nil || err.Error() != "ipc-disconnected") {
+				t.Fatal("read failure lost its cause", err)
+			}
+		})
+	}
+}
+
+func TestIPCRouterErrorDoesNotRelaxSuccessIdentity(t *testing.T) {
+	for name, tc := range map[string]struct {
+		response wire
+		want     string
+	}{
+		"router error":             {wire{"resultType": "error", "error": "no-client-found"}, "no-client-found"},
+		"missing success identity": {wire{"resultType": "success", "result": wire{}}, "response-owner-mismatch"},
+		"wrong method":             {wire{"resultType": "error", "method": "initialize", "handledByClientId": "owner", "error": "no-client-found"}, "response-owner-mismatch"},
+		"wrong owner":              {wire{"resultType": "error", "method": "thread-follower-load-complete-history", "handledByClientId": "other", "error": "no-client-found"}, "response-owner-mismatch"},
+		"valid success":            {wire{"resultType": "success", "method": "thread-follower-load-complete-history", "handledByClientId": "owner", "result": wire{}}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, server := net.Pipe()
+			c := &ipcClient{conn: client, pending: map[string]rpcWait{}, clientID: "client", timeout: 100 * time.Millisecond}
+			defer c.abort(fmt.Errorf("test finished"))
+			go c.readLoop()
+			timeout := make(chan float64, 1)
+			go func() {
+				defer server.Close()
+				request, err := readFrame(server)
+				if err != nil {
+					return
+				}
+				timeout <- request["timeoutMs"].(float64)
+				tc.response["type"] = "response"
+				tc.response["requestId"] = request["requestId"]
+				b, _ := encodeFrame(tc.response)
+				_, _ = server.Write(b)
+			}()
+			_, err := c.rpc(context.Background(), "thread-follower-load-complete-history", wire{}, "owner")
+			if tc.want == "" && err != nil || tc.want != "" && (err == nil || err.Error() != tc.want) {
+				t.Fatal("response identity or routing error handled incorrectly", err)
+			}
+			if <-timeout != 30000 {
+				t.Fatal("full history still uses the short submission timeout")
+			}
+		})
+	}
+}
+
+func TestCUJ_LargeHistoryBindingAndContinuation(t *testing.T) {
+	f, socket := newFake(t)
+	f.mu.Lock()
+	state := uiTurn("T2", strings.Repeat("x", maxFrame+1))
+	obj(list(state["turns"])[0])["status"] = "completed"
+	f.states["T2"] = state
+	f.mu.Unlock()
+	a := testAgent(t, socket)
+	a.timeout = 2 * time.Second
+	p := &fakePlatform{}
+	o := *incoming("A", "DM", "pair-large", "pair").ConversationOrigin
+	ctx := context.Background()
+	if err := a.BindPairedConversation(ctx, p, o, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.BindConversation(ctx, originKey(o), "T1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.BindConversation(ctx, originKey(o), "codex://threads/T2"); err != nil {
+		t.Fatal("large history could not be bound", err)
+	}
+	if count(t, a.store, `SELECT count(*) FROM bindings WHERE origin=? AND thread='T2'`, originKey(o)) != 1 || count(t, a.store, `SELECT count(*) FROM jobs`) != 0 {
+		t.Fatal("binding was not saved or submitted a turn")
+	}
+	m := incoming("A", "DM", "large-followup", "continue this conversation")
+	accept(t, a, p, m)
+	step(t, a)
+	f.finish("T2", "continued with history", false)
+	step(t, a)
+	accept(t, a, p, m)
+	step(t, a)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.starts != 1 || count(t, a.store, `SELECT count(*) FROM jobs WHERE thread='T2' AND state='finished'`) != 1 {
+		t.Fatal("large-history continuation failed or submitted more than once")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.sent) != 1 || p.sent[0].o.MessageID != m.MessageID || p.sent[0].text != "continued with history" {
+		t.Fatal("continuation reply lost its original source")
 	}
 }
 func TestClaimOwnerGenerationFence(t *testing.T) {

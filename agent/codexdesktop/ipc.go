@@ -18,9 +18,16 @@ import (
 	"github.com/google/uuid"
 )
 
-const maxFrame = 8 << 20
+const (
+	maxFrame = 8 << 20
+	// Desktop sends the complete conversation, including embedded media, in a
+	// single frame. Match its receive limit without raising our outbound limit.
+	maxIncomingFrame = 256 << 20
+)
 
 var errOwnerUnavailable = errors.New("desktop-thread-owner-unavailable")
+var errFrameTooLarge = errors.New("ipc-frame-too-large")
+var errInvalidEnvelope = errors.New("invalid-envelope")
 
 var methodVersions = map[string]int{"initialize": 0, "thread-owner-discovery": 1, "thread-follower-load-complete-history": 1, "thread-follower-start-turn": 2, "thread-follower-submit-user-input": 1, "thread-follower-steer-turn": 1}
 
@@ -57,7 +64,10 @@ func readFrame(r io.Reader) (wire, error) {
 		return nil, err
 	}
 	n := binary.LittleEndian.Uint32(h)
-	if n == 0 || n > maxFrame {
+	if n > maxIncomingFrame {
+		return nil, fmt.Errorf("%w: %d bytes (limit %d)", errFrameTooLarge, n, maxIncomingFrame)
+	}
+	if n == 0 {
 		return nil, fmt.Errorf("invalid-frame-size")
 	}
 	b := make([]byte, n)
@@ -66,7 +76,7 @@ func readFrame(r io.Reader) (wire, error) {
 	}
 	var m wire
 	if !utf8.Valid(b) || json.Unmarshal(b, &m) != nil || m == nil {
-		return nil, fmt.Errorf("invalid-envelope")
+		return nil, errInvalidEnvelope
 	}
 	return m, nil
 }
@@ -193,7 +203,10 @@ func (c *ipcClient) readLoop() {
 	for {
 		m, err := readFrame(c.conn)
 		if err != nil {
-			c.abort(fmt.Errorf("ipc-disconnected"))
+			if !errors.Is(err, errFrameTooLarge) && !errors.Is(err, errInvalidEnvelope) {
+				err = fmt.Errorf("ipc-disconnected")
+			}
+			c.abort(err)
 			return
 		}
 		c.mu.Lock()
@@ -250,7 +263,13 @@ func (c *ipcClient) rpc(ctx context.Context, method string, params wire, owner s
 	}
 	c.pending[id] = rpcWait{method, owner, ch}
 	c.mu.Unlock()
-	m := wire{"type": "request", "requestId": id, "sourceClientId": source, "version": v, "method": method, "params": params, "timeoutMs": int(c.timeout.Milliseconds())}
+	timeout := c.timeout
+	if method == "thread-follower-load-complete-history" && timeout < 30*time.Second {
+		// Large histories can take longer to serialize, transfer and decode.
+		// Keep the shorter deadline for turn submission and other operations.
+		timeout = 30 * time.Second
+	}
+	m := wire{"type": "request", "requestId": id, "sourceClientId": source, "version": v, "method": method, "params": params, "timeoutMs": int(timeout.Milliseconds())}
 	if owner != "" {
 		m["targetClientId"] = owner
 	}
@@ -258,12 +277,24 @@ func (c *ipcClient) rpc(ctx context.Context, method string, params wire, owner s
 		c.abort(err)
 		return nil, err
 	}
-	timer := time.NewTimer(c.timeout)
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case response, open := <-ch:
 		if !open {
-			return nil, fmt.Errorf("ipc-disconnected")
+			c.mu.Lock()
+			err := c.failure
+			c.mu.Unlock()
+			return nil, err
+		}
+		// Router errors have no method or handler when no owner accepted the
+		// request. They must reach the existing activation/recovery path; a
+		// successful response still requires the exact method and owner below.
+		if str(response["resultType"]) == "error" && response["method"] == nil && response["handledByClientId"] == nil {
+			switch code := str(response["error"]); code {
+			case "no-client-found", "client-disconnected", "unsupported-version", "version-mismatch", "client-cannot-handle-request":
+				return nil, fmt.Errorf("%s", code)
+			}
 		}
 		if str(response["method"]) != method || (owner != "" && str(response["handledByClientId"]) != owner) {
 			return nil, fmt.Errorf("response-owner-mismatch")
